@@ -747,9 +747,8 @@ export function runSim(config) {
             addEvent(day, 'CRIT', o.customerId,
               `${o.id} LATE ${lateDays}D · LD $${Math.round(o.penaltyUSD).toLocaleString('en-US')}`,
               { orderId: o.id });
-          } else {
-            addEvent(day, 'INFO', o.customerId, `${o.id} DELIVERED ON TIME`, { orderId: o.id });
           }
+          // 정시 인도는 예외가 아니므로 피드에 남기지 않는다 (§4.8 예외 우선).
         } else {
           o.status = 'PARTIAL';
         }

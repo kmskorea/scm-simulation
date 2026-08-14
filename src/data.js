@@ -136,27 +136,37 @@ export const CELL_IDS = NODES.filter((n) => n.type === 'CELL').map((n) => n.id);
 export const PACK_IDS = NODES.filter((n) => n.type === 'PACK').map((n) => n.id);
 export const LINK_IDS = NODES.filter((n) => n.type === 'LINK').map((n) => n.id);
 
+// 전국 스케일 심볼 오프셋.
+// ESMI_H / PW1 / PW2 는 전부 Holland, MI 안에 있어(상호 3마일 이내) 같은 픽셀에
+// 찍힌다. 자동 분산은 금지이므로(§4.1) 여기서 수동으로 부챗살처럼 벌리고,
+// 실제 좌표까지 1px leader 를 그어 위치를 왜곡했다는 사실을 드러낸다.
+export const MAP_OFFSETS = {
+  ESMI_H: { dx: -7, dy: -6 },
+  PW1: { dx: 7, dy: -7 },
+  PW2: { dx: 9, dy: 4 },
+};
+
 // 노드별 라벨 수동 배치 (자동 배치 금지 — 겹치면 인포그래픽 실격)
 export const LABEL_OFFSETS = {
-  ESMI_H: { dx: 0, dy: -14, anchor: 'middle' },
-  ESMI_L: { dx: 12, dy: 4, anchor: 'start' },
+  ESMI_H: { dx: -10, dy: -8, anchor: 'end' },
+  ESMI_L: { dx: -9, dy: 12, anchor: 'end' },
   ESST: { dx: 0, dy: 20, anchor: 'middle' },
-  ESHD: { dx: 12, dy: 12, anchor: 'start' },
-  UC2: { dx: 12, dy: -6, anchor: 'start' },
-  PW1: { dx: -12, dy: -4, anchor: 'end' },
-  PW2: { dx: -12, dy: 10, anchor: 'end' },
+  ESHD: { dx: 11, dy: 12, anchor: 'start' },
+  UC2: { dx: 11, dy: -6, anchor: 'start' },
+  PW1: { dx: 11, dy: -5, anchor: 'start' },
+  PW2: { dx: 12, dy: 9, anchor: 'start' },
   AZL: { dx: 0, dy: 22, anchor: 'middle' },
-  CHI: { dx: 0, dy: -13, anchor: 'middle' },
+  CHI: { dx: -11, dy: -5, anchor: 'end' },
   NEER_ND: { dx: 0, dy: -9, anchor: 'middle' },
   DESRI_MN: { dx: 8, dy: -6, anchor: 'start' },
   DTE_MI: { dx: 9, dy: 10, anchor: 'start' },
   AVANGRID_OR: { dx: -8, dy: -6, anchor: 'end' },
-  NEER_CA: { dx: -8, dy: 0, anchor: 'end' },
-  IOWN_NV: { dx: 0, dy: -9, anchor: 'middle' },
-  AVANTUS_CA: { dx: -8, dy: 10, anchor: 'end' },
-  TERRAGEN_CA: { dx: -8, dy: 12, anchor: 'end' },
-  SBE_NM: { dx: 0, dy: 15, anchor: 'middle' },
-  NEER_AZ: { dx: -7, dy: 13, anchor: 'end' },
+  NEER_CA: { dx: -9, dy: -7, anchor: 'end' },
+  IOWN_NV: { dx: -9, dy: -6, anchor: 'end' },
+  AVANTUS_CA: { dx: -9, dy: 4, anchor: 'end' },
+  TERRAGEN_CA: { dx: -9, dy: 16, anchor: 'end' },
+  SBE_NM: { dx: 5, dy: -7, anchor: 'start' },
+  NEER_AZ: { dx: 3, dy: 19, anchor: 'start' },
   HYUNDAI_TX: { dx: 0, dy: 15, anchor: 'middle' },
   NEER_FL: { dx: 7, dy: 8, anchor: 'start' },
 };
