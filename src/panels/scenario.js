@@ -9,8 +9,8 @@ import {
 } from '../components.js';
 import { fmtNum, usd, pct } from '../units.js';
 import {
-  appState, applyPreset, addDisruption, removeDisruption, setGlobal,
-  setGlobal as setCfg, setMonteCarlo, setMcProgress, removeSimAction,
+  applyPreset, addDisruption, removeDisruption, setGlobal,
+  setMonteCarlo, setMcProgress, removeSimAction,
 } from '../store.js';
 
 export const title = 'Scenario';

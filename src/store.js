@@ -9,7 +9,7 @@
 //   → 렌더. 재생/스크럽은 이 result 의 k일 슬라이스만 읽으며 엔진을 부르지 않는다.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { buildDefaultConfig, DISPLAY_UNITS, PRESETS } from './data.js';
+import { buildDefaultConfig, PRESETS } from './data.js';
 import { runSim, computeTTS, counterfactualConfig, earliestApplicableDay } from './sim.js';
 import { setDisplayUnit } from './units.js';
 
@@ -47,7 +47,6 @@ export function emitFrame() { for (const f of subs.frame) f(appState); }
 // ── 재계산 ──────────────────────────────────────────────────────────────
 let dataTimer = null;
 let ttsTimer = null;
-let recomputeCount = 0;
 
 export function recomputeNow() {
   const t0 = performance.now();
@@ -56,7 +55,6 @@ export function recomputeNow() {
   if (appState.result.tts == null && lastTts) appState.result.tts = lastTts;
   appState.playhead = Math.min(appState.playhead, appState.config.horizonDays - 1);
   appState.lastComputeMs = performance.now() - t0;
-  recomputeCount++;
   emitData();
   scheduleTts();
   writeHash();
@@ -319,14 +317,3 @@ export function readHash() {
   }
 }
 
-// ── 파생 조회 헬퍼 ──────────────────────────────────────────────────────
-export function nodeStatusAt(nodeId, day) {
-  return appState.result?.perNode[nodeId]?.stateTimeline[day] ?? 'RUNNING';
-}
-
-export function activeResult() {
-  return appState.result;
-}
-
-export const UNIT_OPTIONS = DISPLAY_UNITS;
-export { recomputeCount };

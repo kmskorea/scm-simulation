@@ -8,7 +8,7 @@
 
 import {
   NODES, HUB, CUSTOMERS, LANE_TYPES, LANE_INDEX, NODE_LEVER_SPEC,
-  ALLOCATION_RULES, isOverriddenDistance, UNITS,
+  isOverriddenDistance, UNITS,
 } from '../data.js';
 import {
   el, section, slider, segmented, numberField, checkbox, badge, callout,
@@ -16,7 +16,7 @@ import {
 } from '../components.js';
 import { qty, fmtNum, usd, dualQty, miles as fmtMiles, STATUS_CLASS, loadQty } from '../units.js';
 import {
-  appState, setNodeLever, setLaneLever, setCustomerLever, setGlobal,
+  setNodeLever, setLaneLever, setCustomerLever, setGlobal,
   resetNode, setSelection, toggleWatch, isWatched, pushSimAction,
 } from '../store.js';
 import {

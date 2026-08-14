@@ -6,7 +6,7 @@
 
 import { NODES } from '../data.js';
 import { el, clear, badge, sparkline } from '../components.js';
-import { usd, fmtNum, qty, day as fmtDay, SEVERITY_GLYPH } from '../units.js';
+import { usd, fmtNum, day as fmtDay, SEVERITY_GLYPH } from '../units.js';
 import { appState, setSelection, setPlayhead, setPanel, setView } from '../store.js';
 
 let root = null;

@@ -6,7 +6,7 @@
 // 한눈에 보이고, 레인 사이 여백의 점이 '지도에서 안 보이는 파이프라인 재고'다.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { NODES, CUSTOMERS, CELL_IDS, PACK_IDS, LANES, UNITS } from '../data.js';
+import { NODES, CUSTOMERS, CELL_IDS, PACK_IDS } from '../data.js';
 import { svg, clear, showTip, moveTip, hideTip } from '../components.js';
 import { qty, fmtNum, usd, STATUS_COLOR } from '../units.js';
 import { appState, setSelection } from '../store.js';

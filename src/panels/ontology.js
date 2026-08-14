@@ -8,8 +8,8 @@
 
 import { ONTOLOGY, NODES, LANES, CUSTOMERS, HUB, LANE_INDEX, PACK_IDS, CELL_IDS } from '../data.js';
 import { el, section, badge, button, kv, callout, slider } from '../components.js';
-import { usd, fmtNum, qty } from '../units.js';
-import { appState, pushSimAction, setSelection, removeSimAction } from '../store.js';
+import { usd, fmtNum } from '../units.js';
+import { pushSimAction, setSelection, removeSimAction } from '../store.js';
 
 export const title = 'Ontology';
 

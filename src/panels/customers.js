@@ -3,10 +3,10 @@
 // 전역 LD 레버 (상단) + 고객별 오버라이드 (행) 2단 구조 · PO 테이블 48건
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { CUSTOMERS, CONTRACT_DEFAULTS, UNITS } from '../data.js';
+import { CUSTOMERS } from '../data.js';
 import { el, section, slider, numberField, badge, kv } from '../components.js';
-import { usd, fmtNum, qty } from '../units.js';
-import { appState, setAllCustomers, setCustomerLever, setSelection } from '../store.js';
+import { usd, fmtNum } from '../units.js';
+import { setAllCustomers, setCustomerLever, setSelection } from '../store.js';
 
 export const title = 'Customers';
 

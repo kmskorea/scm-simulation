@@ -8,17 +8,15 @@
 
 import {
   NODES, HUB, CUSTOMERS, LANES, ASSUMPTIONS, META, BOM, UNITS, SIM,
-  DISPLAY_UNITS, COST_DEFAULTS, UPSTREAM_MODEL,
+  DISPLAY_UNITS, UPSTREAM_MODEL,
 } from './data.js';
-import { el, clear, icon, badge, section, kv, slider, numberField, button } from './components.js';
+import { el, clear, icon, badge, section, kv, numberField, button } from './components.js';
 import { usd, fmtNum, day as fmtDay, setDisplayUnit } from './units.js';
 import {
   appState, onData, onFrame, recomputeNow, readHash, writeHash,
   setPlayhead, setView, setMode, setUnit, setPanel, setSelection, resetAll,
-  toggleCounterfactual, setCost, setIdleCost, emitFrame,
+  toggleCounterfactual, setCost, setIdleCost,
 } from './store.js';
-import { effectiveDailyOutput } from './sim.js';
-
 import * as networkView from './views/network.js';
 import * as flowView from './views/flow.js';
 import * as costView from './views/cost.js';
@@ -45,8 +43,6 @@ const VIEWS = {
   COST: { mod: costView, node: () => document.getElementById('view-cost') },
 };
 
-let prevDayKpi = null;
-
 // ═══════════════════════════════════════════════════════════════════════
 function init() {
   readHash();
@@ -68,7 +64,7 @@ function init() {
 
   onData(renderAll);
   onFrame(renderFrame);
-  window.addEventListener('panel-refresh', () => renderPanel(appState));
+  window.addEventListener('panel-refresh', () => renderPanel(appState, true));
 
   recomputeNow();
 
@@ -200,7 +196,6 @@ function renderDeltaStrip(state) {
     strip.appendChild(el('span', { class: 'muted', style: { marginLeft: 'auto' },
       text: `recompute ${state.lastComputeMs.toFixed(0)} ms` }));
   }
-  void prevDayKpi;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -350,15 +345,27 @@ let searchIndex = null;
 let searchCursor = 0;
 
 function buildSearchIndex() {
+  // 엔티티가 먼저, Lane 이 뒤. "NEER_AZ" 를 치면 고객이 나와야지 그 고객으로 가는
+  // 구간(AZL->NEER_AZ)이 먼저 잡히면 안 된다.
   const idx = [];
   for (const n of NODES) idx.push({ kind: 'NODE', id: n.id, name: `${n.name} · ${n.place}`, sel: { type: 'node', id: n.id } });
   idx.push({ kind: 'HUB', id: HUB.id, name: `${HUB.name} · ${HUB.place}`, sel: { type: 'hub', id: HUB.id } });
-  for (const l of LANES) idx.push({ kind: 'LANE', id: l.id, name: l.laneType, sel: { type: 'lane', id: l.id } });
   for (const c of CUSTOMERS) idx.push({ kind: 'CUST', id: c.id, name: `${c.name} · ${c.state}`, sel: { type: 'customer', id: c.id } });
   for (const o of appState.result.orders) {
     idx.push({ kind: 'PO', id: o.id, name: `${o.customerId} · DUE D+${o.dueDay}`, meta: o.status, sel: { type: 'order', id: o.id }, day: o.dueDay });
   }
+  for (const l of LANES) idx.push({ kind: 'LANE', id: l.id, name: l.laneType, sel: { type: 'lane', id: l.id } });
   return idx;
+}
+
+/** 정확 일치 → 접두 일치 → id 부분일치 → 이름 부분일치 순. */
+function searchRank(item, needle) {
+  const id = item.id.toLowerCase();
+  if (id === needle) return 0;
+  if (id.startsWith(needle)) return 1;
+  if (id.includes(needle)) return 2;
+  if (item.name.toLowerCase().includes(needle)) return 3;
+  return 99;
 }
 
 function openSearch() {
@@ -376,9 +383,14 @@ function paintSearch(q) {
   const box = document.getElementById('search-results');
   clear(box);
   const needle = q.trim().toLowerCase();
-  const hits = searchIndex
-    .filter((x) => !needle || x.id.toLowerCase().includes(needle) || x.name.toLowerCase().includes(needle))
-    .slice(0, 40);
+  const hits = (needle
+    ? searchIndex
+        .map((x) => ({ x, r: searchRank(x, needle) }))
+        .filter((h) => h.r < 99)
+        .sort((a, b) => a.r - b.r)
+        .map((h) => h.x)
+    : searchIndex
+  ).slice(0, 40);
   searchCursor = Math.min(searchCursor, Math.max(0, hits.length - 1));
   hits.forEach((h, i) => {
     box.appendChild(el('div', {

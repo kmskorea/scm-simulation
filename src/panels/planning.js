@@ -10,7 +10,7 @@
 import { ALLOCATION_RULES } from '../data.js';
 import { el, section, slider, selectField, kv, callout, badge } from '../components.js';
 import { usd, fmtNum } from '../units.js';
-import { appState, setPlanning, toggleCounterfactual } from '../store.js';
+import { setPlanning, toggleCounterfactual } from '../store.js';
 import { earliestApplicableDay } from '../sim.js';
 
 export const title = 'Planning';
