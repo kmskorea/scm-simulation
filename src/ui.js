@@ -8,7 +8,7 @@
 
 import {
   NODES, HUB, CUSTOMERS, LANES, ASSUMPTIONS, META, BOM, UNITS, SIM,
-  DISPLAY_UNITS, UPSTREAM_MODEL,
+  UPSTREAM_MODEL,
 } from './data.js';
 import { el, clear, icon, badge, section, kv, numberField, button } from './components.js';
 import { usd, fmtNum, day as fmtDay, setDisplayUnit } from './units.js';
@@ -16,7 +16,7 @@ import { fmtDate, fmtDateTime, fmtClock } from './clock.js';
 import { linkHealth, isPristineLive } from './telemetry.js';
 import {
   appState, onData, onFrame, recomputeNow, readHash, writeHash,
-  setPlayhead, setView, setMode, setUnit, setPanel, setSelection, resetAll,
+  setPlayhead, setView, setMode, setPanel, openPanel, setSelection, resetAll,
   toggleCounterfactual, setCost, setIdleCost, goToNow,
 } from './store.js';
 import * as networkView from './views/network.js';
@@ -27,7 +27,6 @@ import * as ganttView from './views/gantt.js';
 import * as inspectorPanel from './panels/inspector.js';
 import * as scenarioPanel from './panels/scenario.js';
 import * as planningPanel from './panels/planning.js';
-import * as customersPanel from './panels/customers.js';
 import * as ontologyPanel from './panels/ontology.js';
 import * as rightPanel from './panels/right.js';
 
@@ -35,9 +34,12 @@ const PANELS = {
   INSPECTOR: { mod: inspectorPanel, icon: 'inspector', title: 'Node · Lane · Customer Inspector' },
   SCENARIO: { mod: scenarioPanel, icon: 'scenario', title: 'Scenario' },
   PLANNING: { mod: planningPanel, icon: 'planning', title: 'Planning' },
-  CUSTOMERS: { mod: customersPanel, icon: 'customers', title: 'Customers' },
-  ONTOLOGY: { mod: ontologyPanel, icon: 'ontology', title: 'Ontology' },
+  ONTOLOGY: { mod: ontologyPanel, icon: 'ai', title: 'AI Decision Support' },
 };
+
+// PLAN 에서만 열리는 패널. SCENARIO 는 가설 장애를 주입하는 곳이라 정의상
+// '관측'이 아니다 — LIVE 에 놔두면 실측과 가정의 경계가 흐려진다.
+const PLAN_ONLY_PANELS = new Set(['SCENARIO']);
 
 const VIEWS = {
   NETWORK: { mod: networkView, node: () => document.getElementById('view-network') },
@@ -53,7 +55,6 @@ function init() {
   setDisplayUnit(appState.displayUnit);
 
   buildRail();
-  buildUnitSelect();
   wireTopbar();
   wireTransport();
   wireKeyboard();
@@ -70,6 +71,9 @@ function init() {
   onData(renderAll);
   onFrame(renderFrame);
   window.addEventListener('panel-refresh', () => renderPanel(appState, true));
+  // 패널 모듈이 토스트를 띄울 수 있게 한다 (flash 는 이 모듈 지역 함수라 직접 못 부른다).
+  window.addEventListener('app-flash', (e) => flash(e.detail));
+  window.addEventListener('projection-play', playProjection);
 
   recomputeNow();
 
@@ -174,7 +178,6 @@ function syncTabs(state) {
     b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode));
   }
   document.getElementById('btn-cf').classList.toggle('primary', state.showCounterfactual);
-  document.getElementById('unit-select').value = state.displayUnit;
 
   // LIVE 는 '지금'을 보는 모드다 — 재생 · 스크럽을 잠근다.
   const live = state.mode === 'LIVE';
@@ -182,6 +185,11 @@ function syncTabs(state) {
     document.getElementById(id).disabled = live && !state.projectionRevealed;
   }
   document.getElementById('transport').classList.toggle('live-locked', live);
+
+  // PLAN 전용 패널은 LIVE 에서 레일에서 감춘다.
+  for (const b of document.querySelectorAll('.rail-btn[data-panel]')) {
+    b.hidden = live && PLAN_ONLY_PANELS.has(b.dataset.panel);
+  }
 
   // 관측된 현장 상태를 벗어난 화면에만 SIMULATION 을 표기한다.
   const simulated = !isPristineLive(state.config);
@@ -274,15 +282,6 @@ function buildRail() {
   });
 }
 
-function buildUnitSelect() {
-  const sel = document.getElementById('unit-select');
-  clear(sel);
-  for (const u of DISPLAY_UNITS) {
-    sel.appendChild(el('option', { value: u.id, text: u.label, selected: u.id === appState.displayUnit }));
-  }
-  sel.addEventListener('change', (e) => setUnit(e.target.value));
-}
-
 function wireTopbar() {
   document.getElementById('tabstrip').addEventListener('click', (e) => {
     const t = e.target.closest('.tab');
@@ -294,20 +293,11 @@ function wireTopbar() {
   });
   document.getElementById('search-open').addEventListener('click', openSearch);
   document.getElementById('btn-settings').addEventListener('click', openSettings);
-  document.getElementById('btn-share').addEventListener('click', async () => {
-    writeHash();
-    try {
-      await navigator.clipboard.writeText(location.href);
-      flash('시나리오 링크를 클립보드에 복사했습니다');
-    } catch {
-      flash('복사 실패 — 주소창의 URL 을 직접 복사하세요');
-    }
-  });
 }
 
 // ── 재생 (§1.5.1 — 엔진을 부르지 않는 순수 렌더 루프) ───────────────────
+// 속도는 appState.speed 가 보유한다 — ADVANCED 패널에서도 바꾸므로.
 let playing = false;
-let speed = 1;
 let rafId = null;
 let lastT = 0;
 let acc = 0;
@@ -321,17 +311,14 @@ function wireTransport() {
   // Reset 은 '관측된 현장 상태'로 되돌리는 것이므로 플레이헤드도 현재로 보낸다.
   document.getElementById('btn-reset').addEventListener('click', () => { stop(); resetAll(); goToNow(); });
   document.getElementById('btn-cf').addEventListener('click', toggleCounterfactual);
-  document.getElementById('speed-toggle').addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (!b) return;
-    speed = Number(b.dataset.speed);
-    for (const x of e.currentTarget.children) x.setAttribute('aria-pressed', String(x === b));
-  });
 }
 
 function togglePlay() {
   playing ? stop() : start();
 }
+
+// 재생이 '끝까지 갔을 때'만 실행할 일 (중간에 멈추면 부르지 않는다).
+let onPlayComplete = null;
 
 function start() {
   playing = true;
@@ -342,12 +329,18 @@ function start() {
     if (!playing) return;
     const dt = t - lastT;
     lastT = t;
-    acc += (dt / 1000) * speed * 8; // 8 일/초 @1x
+    acc += (dt / 1000) * appState.speed * 8; // 8 일/초 @1x
     if (acc >= 1) {
       const step = Math.floor(acc);
       acc -= step;
       const next = appState.playhead + step;
-      if (next >= appState.config.horizonDays - 1) { setPlayhead(appState.config.horizonDays - 1); stop(); return; }
+      if (next >= appState.config.horizonDays - 1) {
+        setPlayhead(appState.config.horizonDays - 1);
+        const done = onPlayComplete;
+        stop();
+        done?.();
+        return;
+      }
       setPlayhead(next);
     }
     rafId = requestAnimationFrame(tick);
@@ -357,9 +350,27 @@ function start() {
 
 function stop() {
   playing = false;
+  onPlayComplete = null; // 사용자가 중간에 멈췄으면 후속 동작도 취소된다
   document.getElementById('btn-play').textContent = '▶';
   if (rafId) cancelAnimationFrame(rafId);
   rafId = null;
+}
+
+/**
+ * '이대로 두면? · 90일 전망' 후속 연출.
+ * 관측 시점부터 지평선 끝까지 재생하고, 다 본 다음에 AI 진단·추천을 연다.
+ * 추천은 재계산 뒤 debounce 를 거쳐 채워지므로, 아직 비어 있으면 잠깐 기다렸다
+ * 연다 — 빈 패널이 먼저 열리면 '추천이 없다'로 읽힌다.
+ */
+function playProjection() {
+  stop();
+  setPlayhead(appState.nowDay);
+  onPlayComplete = () => {
+    const open = () => openPanel('ONTOLOGY');
+    if (appState.recommendations?.length) open();
+    else setTimeout(open, 700);
+  };
+  start();
 }
 
 // ── 키보드 (§4.8) ───────────────────────────────────────────────────────

@@ -341,6 +341,41 @@ export const PLANNING_DEFAULTS = {
   allocationRule: 'dueDate', // dueDate | penaltyValue | priorityTier | proRata | fcfs
 };
 
+// ───────────────────────────────────────────────────────────────────────────
+// 8-B. 실행 책임자 — Action 추천의 '담당자' 필드
+//
+// ⚠ 이름은 전부 자리표시자다. 실제 조직도와 연결하려면 이 표를 인사/조직
+//    시스템에서 받아오면 된다. Ontology 상으로는 Facility → responsibleParty
+//    링크에 해당한다. 승인 라인(approver)까지 두는 이유는, 추천이 '실행'까지
+//    이어지려면 누가 눌러야 하는지가 명시돼야 하기 때문이다.
+// ───────────────────────────────────────────────────────────────────────────
+export const RESPONSIBLE = {
+  ESMI_H: { owner: '생산팀 A', person: '담당자 미지정', approver: 'ESMI 공장장', org: 'LGES ESMI' },
+  ESMI_L: { owner: '생산팀 B', person: '담당자 미지정', approver: 'ESMI 공장장', org: 'LGES ESMI' },
+  ESST: { owner: 'JV 운영팀', person: '담당자 미지정', approver: 'ESST 공장장', org: 'ESST JV' },
+  ESHD: { owner: 'JV 운영팀', person: '담당자 미지정', approver: 'ESHD 공장장', org: 'ESHD JV' },
+  UC2: { owner: 'JV 운영팀', person: '담당자 미지정', approver: 'UC2 공장장', org: 'UC2 JV' },
+  PW1: { owner: '외주관리팀', person: '담당자 미지정', approver: 'Pack 생산총괄', org: 'People Works' },
+  PW2: { owner: '외주관리팀', person: '담당자 미지정', approver: 'Pack 생산총괄', org: 'People Works (신규)' },
+  AZL: { owner: 'AZ 조립운영팀', person: '담당자 미지정', approver: 'AZL 공장장', org: 'LGES AZ' },
+  LOGISTICS: { owner: '물류팀', person: '담당자 미지정', approver: '물류총괄', org: 'LGES NA SCM' },
+  PLANNING: { owner: 'SCM 계획팀', person: '담당자 미지정', approver: 'SCM 총괄', org: 'LGES NA SCM' },
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+// 9-B. 확률 모드 상세 (ADVANCED 전용)
+//
+// 원래 sim.js 안에 리터럴로 박혀 있던 값들이다. 조정 가능한 파라미터가
+// 코드에 숨어 있으면 '이 앱 밖에 하드코딩된 수치를 두지 않는다'는 이 파일의
+// 전제가 깨지므로 여기로 끌어냈다.
+//   transitTriangular  수송일 배수 (min=1.0 은 계획대로, mode/max 는 지연 쪽)
+//   outputTriangular   일산출 배수 (mode=1.0 기준으로 위아래)
+// ───────────────────────────────────────────────────────────────────────────
+export const STOCHASTIC_DEFAULTS = {
+  transitTriangular: { min: 1.0, mode: 1.15, max: 1.6 },
+  outputTriangular: { min: 0.85, mode: 1.0, max: 1.05 },
+};
+
 export const ALLOCATION_RULES = [
   { id: 'dueDate', label: 'DUE DATE', desc: '납기 임박순' },
   { id: 'penaltyValue', label: 'PENALTY', desc: '페널티 노출액 큰 순' },
@@ -399,6 +434,7 @@ export function buildDefaultConfig() {
     lanes,
     customers,
     planning: { ...PLANNING_DEFAULTS },
+    stochasticParams: JSON.parse(JSON.stringify(STOCHASTIC_DEFAULTS)),
     cost: JSON.parse(JSON.stringify(COST_DEFAULTS)),
     disruptions: [], // §3.5
     actions: [], // PLAN 모드 Action 큐 — { day, type, ... }

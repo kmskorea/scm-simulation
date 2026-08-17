@@ -10,9 +10,9 @@ import {
   NODES, HUB, CUSTOMERS, LANES, LABEL_OFFSETS, MAP_OFFSETS, CELL_IDS, PACK_IDS,
   GEO_INDEX, isOverriddenDistance,
 } from '../data.js';
-import { svg, clear, showTip, moveTip, hideTip } from '../components.js';
+import { svg, clear, showTip, moveTip, hideTip, healthLegend } from '../components.js';
 import { albersUsa, geoPathString, milesPerPixel, filterToConus } from '../geo.js';
-import { qty, usd, miles as fmtMiles, STATUS_COLOR, fmtNum } from '../units.js';
+import { qty, usd, miles as fmtMiles, STATUS_COLOR, fmtNum, nodeHealth } from '../units.js';
 import { appState, setSelection } from '../store.js';
 
 const NATION_URL = 'https://cdn.jsdelivr.net/npm/us-atlas@3/nation-10m.json';
@@ -339,6 +339,14 @@ function drawNodes(g, state) {
       iconG.appendChild(gauges.inBar); iconG.appendChild(gauges.outBar);
     }
 
+    // 상태 글리프 — 색만으로는 색각 이상 사용자가 구분할 수 없고, 링 색이
+    // 겹치는 CRITICAL/AT_RISK 를 형태로 갈라 준다 (범례와 같은 기호).
+    const glyph = n.type === 'HUB' ? null : svg('text', {
+      x: 0, y: -(r + (clustered ? 5 : 7)), 'text-anchor': 'middle',
+      class: 'svg-health-glyph', text: '',
+    });
+    if (glyph) iconG.appendChild(glyph);
+
     if (!clustered) {
       const off = LABEL_OFFSETS[n.id] || { dx: 0, dy: -12, anchor: 'middle' };
       iconG.appendChild(svg('text', {
@@ -363,7 +371,7 @@ function drawNodes(g, state) {
       setSelection({ type: n.type === 'HUB' ? 'hub' : 'node', id: n.id }));
 
     g.appendChild(grp);
-    refs.nodes[n.id] = { grp, iconG, ring, body, gauges, type: n.type };
+    refs.nodes[n.id] = { grp, iconG, ring, body, gauges, glyph, type: n.type };
   }
 }
 
@@ -400,6 +408,8 @@ function drawCustomers(g, state) {
 
 // ── 뷰 크롬 ─────────────────────────────────────────────────────────────
 function drawChrome(container) {
+  container.appendChild(healthLegend());
+
   // 축척 표시는 유지한다 — 지도 스케일을 가늠하는 실질적인 정보다.
   // 데이터 출처 · 미검증 고지 문구는 지도 위에서는 지우고 설정(⌘K) 모달의
   // '데이터 출처' 섹션에서만 보여준다 (src/ui.js openSettings 참고).
@@ -530,8 +540,13 @@ export function frame(state) {
 
     const ref = refs.nodes[n.id];
     if (!ref) continue;
-    ref.ring.setAttribute('stroke', STATUS_COLOR[st]);
+    const health = nodeHealth(st, r.tts?.[n.id]);
+    ref.ring.setAttribute('stroke', health.color);
     ref.ring.setAttribute('stroke-dasharray', st === 'DOWN' ? '3 2' : 'none');
+    if (ref.glyph) {
+      ref.glyph.textContent = health.glyph;
+      ref.glyph.setAttribute('fill', health.color);
+    }
     if (ref.gauges) {
       paintGauge(ref.gauges.inBar, ref.gauges.inBg, n.type === 'CELL' ? 1 : inF,
         n.type === 'CELL' ? 'var(--status-idle)' : inF < 0.05 ? 'var(--status-danger)' : 'var(--accent)');

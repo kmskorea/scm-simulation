@@ -8,7 +8,7 @@
 
 import { NODES, CUSTOMERS, CELL_IDS, PACK_IDS } from '../data.js';
 import { svg, clear, showTip, moveTip, hideTip } from '../components.js';
-import { qty, fmtNum, usd, STATUS_COLOR } from '../units.js';
+import { qty, fmtNum, usd, STATUS_COLOR, nodeHealth } from '../units.js';
 import { appState, setSelection } from '../store.js';
 import { effectiveDailyOutput } from '../sim.js';
 
@@ -47,6 +47,20 @@ export function render(state) {
 
   // 열 헤더
   COLS.forEach((c, i) => {
+    // CUSTOMERS 열 머리글은 '고객 전체'로 들어가는 입구다 — 개별 행은 그 고객
+    // 한 곳을, 머리글은 12곳 전부와 PO 48건을 연다.
+    if (c === 'CUSTOMERS') {
+      const hdr = svg('g', { class: 'node-hit col-head-link' });
+      hdr.appendChild(svg('text', {
+        x: colX[i], y: 20, class: 'svg-sect', fill: 'var(--accent)', text: `${c} ▸`,
+      }));
+      hdr.addEventListener('click', () => setSelection({ type: 'customerGroup' }));
+      hdr.addEventListener('mouseenter', (e) => showTip(e, '고객 12곳 · PO 48건 전체 열기'));
+      hdr.addEventListener('mousemove', moveTip);
+      hdr.addEventListener('mouseleave', hideTip);
+      s.appendChild(hdr);
+      return;
+    }
     s.appendChild(svg('text', { x: colX[i], y: 20, class: 'svg-sect', text: c }));
   });
 
@@ -121,6 +135,9 @@ export function render(state) {
   // ── 고객 열 ──────────────────────────────────────────────────────────
   s.appendChild(customerColumn(colX[5], colW[5], top + 6, state));
 
+  // 범례는 NETWORK 에만 둔다. FLOW 는 카드마다 상태를 글자로 이미 찍고 있어
+  // (stateTag: BLOCKED / STARVED) 범례가 같은 정보를 한 번 더 말하면서
+  // 열 머리글 위를 가린다.
   root.appendChild(s);
   frame(state);
 }
@@ -176,6 +193,11 @@ function nodeCard(n, x, y, state) {
     x: CARD.w - 8, y: 14, 'text-anchor': 'end', class: 'flow-card-sub', text: '',
   });
   grp.appendChild(stateTag);
+  // 상태 글리프 — NETWORK 뷰와 같은 기호를 쓴다 (범례 공유).
+  const glyph = svg('text', {
+    x: CARD.w - 8, y: 26, 'text-anchor': 'end', class: 'svg-health-glyph', text: '',
+  });
+  grp.appendChild(glyph);
   const outLabel = svg('text', { x: 10, y: 26, class: 'flow-card-sub', text: '' });
   grp.appendChild(outLabel);
 
@@ -203,7 +225,7 @@ function nodeCard(n, x, y, state) {
   grp.addEventListener('mouseleave', hideTip);
   grp.addEventListener('click', () => setSelection({ type: 'node', id: n.id }));
 
-  refs.cards[n.id] = { grp, statusBar, outLabel, inBar, outBar, stateTag, gw };
+  refs.cards[n.id] = { grp, statusBar, outLabel, inBar, outBar, stateTag, glyph, gw };
   return grp;
 }
 
@@ -222,10 +244,18 @@ function cardTip(id) {
 
 function customerColumn(x, w, y0, state) {
   const g = svg('g');
-  g.appendChild(svg('rect', {
+  // 열 테두리 자체도 '고객 전체' 입구다. 행 사이 여백을 눌러도 열리게 해서
+  // 머리글만 정확히 찍어야 하는 상황을 만들지 않는다.
+  const groupSelected = state.selection?.type === 'customerGroup';
+  const frame = svg('rect', {
     x, y: y0, width: w, height: dims.h - y0 - 60,
-    fill: 'var(--bg-panel)', stroke: 'var(--border-strong)', 'stroke-width': 1,
-  }));
+    fill: 'var(--bg-panel)',
+    stroke: groupSelected ? 'var(--accent)' : 'var(--border-strong)',
+    'stroke-width': groupSelected ? 1.5 : 1,
+    class: 'node-hit',
+  });
+  frame.addEventListener('click', () => setSelection({ type: 'customerGroup' }));
+  g.appendChild(frame);
   const rowH = Math.min(21, (dims.h - y0 - 76) / CUSTOMERS.length);
   CUSTOMERS.forEach((c, i) => {
     const yy = y0 + 6 + i * rowH;
@@ -288,7 +318,6 @@ export function frame(state) {
     if (!ref) continue;
     const p = r.perNode[n.id];
     const st = p.stateTimeline[day] || 'RUNNING';
-    ref.statusBar.setAttribute('fill', STATUS_COLOR[st]);
     ref.outLabel.textContent = `${fmtNum(p.producedSeries[day], 2)} MWh/d`;
     ref.outLabel.setAttribute('fill', 'var(--text-muted)');
 
@@ -301,6 +330,10 @@ export function frame(state) {
     ref.outBar.setAttribute('fill', outF > 0.95 ? 'var(--status-warn)' : 'var(--cyan)');
     ref.stateTag.textContent = st === 'RUNNING' ? '' : st;
     ref.stateTag.setAttribute('fill', STATUS_COLOR[st]);
+    const health = nodeHealth(st, r.tts?.[n.id]);
+    ref.glyph.textContent = health.glyph;
+    ref.glyph.setAttribute('fill', health.color);
+    ref.statusBar.setAttribute('fill', health.color);
     // Cell 은 입고 제약이 없으므로 게이지 자체를 숨긴다
     ref.inBar.setAttribute('opacity', n.type === 'CELL' ? 0 : 1);
 

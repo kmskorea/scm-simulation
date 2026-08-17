@@ -1,5 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// src/panels/customers.js — ④ CUSTOMERS §4.4-④
+// src/panels/customers.js — 고객 · PO 개요 (INSPECTOR 안에서 열린다)
+//
+// 독립 패널이 아니다. FLOW 뷰의 CUSTOMERS 열을 클릭했을 때만 INSPECTOR 에
+// 나타난다 — 고객 전체를 다루는 화면은 '고객 묶음을 선택한 상태'이지, 항상
+// 떠 있어야 하는 것도 별도 메뉴로 나가 있어야 하는 것도 아니기 때문이다.
+// 노드를 클릭하면 그 노드가, CUSTOMERS 열을 클릭하면 고객 전체가 열리는
+// 같은 규칙으로 묶인다.
+//
 // 전역 LD 레버 (상단) + 고객별 오버라이드 (행) 2단 구조 · PO 테이블 48건
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -8,12 +15,11 @@ import { el, section, slider, numberField, badge, kv } from '../components.js';
 import { usd, fmtNum } from '../units.js';
 import { setAllCustomers, setCustomerLever, setSelection } from '../store.js';
 
-export const title = 'Customers';
-
 let sortKey = 'dueDay';
 let showOnlyProblem = false;
 
-export function render(state) {
+/** INSPECTOR 가 selection.type === 'customerGroup' 일 때 부른다. */
+export function overview(state) {
   const box = el('div');
   const r = state.result;
 

@@ -9,9 +9,11 @@
 import { ONTOLOGY, NODES, LANES, CUSTOMERS, HUB, LANE_INDEX, PACK_IDS, CELL_IDS } from '../data.js';
 import { el, section, badge, button, kv, callout, slider } from '../components.js';
 import { usd, fmtNum } from '../units.js';
-import { pushSimAction, setSelection, removeSimAction } from '../store.js';
+import { pushSimAction, setSelection, removeSimAction, approveRecommendation } from '../store.js';
+import { isApplied, findConstraint, activeDrifts, demandOutlook } from '../recommend.js';
+import { fmtDate } from '../clock.js';
 
-export const title = 'Ontology';
+export const title = 'AI Decision Support';
 
 let reallocQty = 5;
 
@@ -20,21 +22,142 @@ export function render(state) {
   const sel = state.selection;
 
   box.appendChild(el('div', { style: { padding: '8px 10px', borderBottom: '1px solid var(--border)' } },
-    el('div', { class: 'tiny muted', text: 'Foundry Ontology 매핑 — 선택된 객체의 타입 · 링크 · 실행 가능 Action' })));
+    el('div', { class: 'tiny muted', text: 'Ontology 기반 진단 → Action 추천 → 승인 → 실행' })));
+
+  // 진단과 추천은 선택 대상과 무관하게 항상 맨 위에 온다 —
+  // '무엇을 클릭해야 할지' 자체를 알려 주는 것이 이 패널의 첫 임무다.
+  box.appendChild(diagnosisCard(state));
+  box.appendChild(recommendationList(state));
+  if (state.config.actions.length) box.appendChild(actionQueue(state));
 
   if (!sel) {
     box.appendChild(section('OBJECT TYPES', typeList()));
     box.appendChild(section('LINK TYPES', linkList()));
     box.appendChild(section('ACTION TYPES', actionTypeList()));
-    box.appendChild(el('div', { class: 'empty-state', text: '노드 · Lane · 고객을 선택하면 그 객체의 인스턴스 카드와 실행 가능한 Action 이 나타납니다.' }));
     return box;
   }
 
   box.appendChild(objectCard(state, sel));
   box.appendChild(linkedObjects(state, sel));
   box.appendChild(actions(state, sel));
-  if (state.config.actions.length) box.appendChild(actionQueue(state));
   return box;
+}
+
+// ── 진단 ────────────────────────────────────────────────────────────────
+function diagnosisCard(state) {
+  const g = el('div');
+  const cons = findConstraint(state.result);
+  const drifts = activeDrifts(state.config, state.nowDay);
+  const outlook = demandOutlook(state.result, state.nowDay);
+
+  g.appendChild(el('div', { class: 'diag-line' },
+    el('span', { class: 'diag-k', text: '제약 공정' }),
+    el('span', { class: 'diag-v', style: { color: 'var(--status-warn)' },
+      text: `${cons.nodeId} (${cons.stage}) · 가동률 ${cons.utilizationPct.toFixed(1)}%` })));
+
+  for (const d of drifts) {
+    g.appendChild(el('div', { class: 'diag-line' },
+      el('span', { class: 'diag-k', text: '실측 편차' }),
+      el('span', { class: 'diag-v', style: { color: 'var(--status-danger)' },
+        text: `${d.nodeId} ${d.label} — 계획 미반영` })));
+  }
+
+  if (outlook.rising) {
+    g.appendChild(el('div', { class: 'diag-line' },
+      el('span', { class: 'diag-k', text: '수요 전망' }),
+      el('span', { class: 'diag-v',
+        text: `${outlook.riseDay != null ? fmtDate(outlook.riseDay) + ' 부터 ' : ''}+${outlook.risePct.toFixed(0)}%` })));
+  }
+
+  const s = state.result.system;
+  g.appendChild(el('div', { class: 'diag-line' },
+    el('span', { class: 'diag-k', text: '영향' }),
+    el('span', { class: 'diag-v',
+      text: `OTD ${s.otdPct.toFixed(1)}% · LD ${usd(s.costBreakdown.ldPenalty)} · 일실 ${s.totalLostOutputMWh.toFixed(0)} MWh` })));
+
+  return section('진단 · DIAGNOSIS', g);
+}
+
+// ── 추천 ────────────────────────────────────────────────────────────────
+function recommendationList(state) {
+  const recs = state.recommendations || [];
+  const g = el('div');
+
+  if (!recs.length) {
+    g.appendChild(el('div', { class: 'empty-state',
+      text: '추천할 조치가 없습니다.\n총원가를 낮추는 후보가 없거나, 아직 계산 중입니다.' }));
+    return section('추천 ACTION · RECOMMENDED', g);
+  }
+
+  recs.forEach((rec, i) => g.appendChild(recommendationCard(state, rec, i + 1)));
+  g.appendChild(el('div', { class: 'ctrl-note', style: { marginTop: '6px' },
+    text: '예상 효과는 추정이 아니라, 그 Action 을 넣고 120일을 실제로 다시 시뮬레이션한 결과입니다.' }));
+  return section('추천 ACTION · RECOMMENDED', g, badge(`${recs.length}`, 'info'));
+}
+
+const KIND_LABEL = {
+  MAINTENANCE: '설비 정비', CAPACITY: '생산능력', INVENTORY: '재고 운영',
+  LOGISTICS: '물류', PLANNING: '계획 체계',
+};
+
+function recommendationCard(state, rec, rank) {
+  const applied = isApplied(state.config, rec);
+  const card = el('div', { class: `rec-card${applied ? ' applied' : ''}` });
+
+  // 헤더 — 순위 · 분류 · 제목
+  card.appendChild(el('div', { class: 'rec-head' },
+    el('span', { class: 'rec-rank', text: `${rank}` }),
+    el('span', { class: 'rec-title', text: rec.title }),
+    applied ? badge('승인됨', 'ok') : badge(KIND_LABEL[rec.kind] || rec.kind, 'info')));
+
+  // 예상 효과 — 가장 먼저 보여야 할 숫자
+  const im = rec.impact;
+  const eff = el('div', { class: 'rec-impact' });
+  const metric = (k, v, good) => el('div', { class: 'rec-metric' },
+    el('div', { class: 'k', text: k }),
+    el('div', { class: 'v', style: { color: good ? 'var(--status-ok)' : 'var(--text-primary)' }, text: v }));
+  eff.appendChild(metric('총원가', usd(im.totalCostUSD), im.totalCostUSD < 0));
+  eff.appendChild(metric('OTD', `${im.otdPct >= 0 ? '+' : ''}${im.otdPct.toFixed(1)}%p`, im.otdPct > 0));
+  eff.appendChild(metric('LD', usd(im.penaltyUSD), im.penaltyUSD < 0));
+  eff.appendChild(metric('일실 산출', `${im.lostMWh >= 0 ? '+' : ''}${im.lostMWh.toFixed(1)} MWh`, im.lostMWh < 0));
+  card.appendChild(eff);
+
+  // 실행 정보 — 담당자 · 적용 예정일 · 대상
+  const r = rec.responsible;
+  card.appendChild(el('div', { class: 'rec-meta' },
+    metaRow('담당', `${r.owner} · ${r.org}`),
+    metaRow('승인', r.approver),
+    metaRow('대상', rec.targetNode ? `${rec.targetNode}${rec.targetOrder ? ` · ${rec.targetOrder}` : ''}` : '계획 시스템 전역'),
+    metaRow('적용 예정일', `${fmtDate(rec.effectiveDay)}${rec.configPatch ? ' (즉시)' : ` · 대응지연 ${rec.lag.totalLagDays}일`}`)));
+
+  // 근거
+  const why = el('div', { class: 'rec-why' });
+  for (const line of rec.why) why.appendChild(el('div', { class: 'rec-why-line', text: `· ${line}` }));
+  card.appendChild(why);
+
+  if (rec.evidence?.length) {
+    const ev = el('div', { class: 'rec-evidence' });
+    for (const [k, v] of rec.evidence) {
+      ev.appendChild(el('div', { class: 'rec-ev-row' },
+        el('span', { class: 'k', text: k }), el('span', { class: 'v', text: v })));
+    }
+    card.appendChild(el('details', { class: 'rec-details' },
+      el('summary', { text: '관련 데이터' }), ev));
+  }
+
+  // 승인 · 실행
+  const btn = button(applied ? '✓ 승인 완료' : '▶ 승인 · 실행',
+    () => { if (!applied) approveRecommendation(rec); },
+    applied ? '' : 'primary');
+  btn.classList.add('wide');
+  if (applied) btn.disabled = true;
+  card.appendChild(el('div', { style: { marginTop: '6px' } }, btn));
+  return card;
+}
+
+function metaRow(k, v) {
+  return el('div', { class: 'rec-meta-row' },
+    el('span', { class: 'k', text: k }), el('span', { class: 'v', text: v }));
 }
 
 function typeList() {

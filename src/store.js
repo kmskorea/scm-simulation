@@ -11,6 +11,7 @@
 
 import { buildDefaultConfig, buildLiveConfig, PRESETS, LIVE } from './data.js';
 import { runSim, computeTTS, counterfactualConfig, earliestApplicableDay } from './sim.js';
+import { recommend } from './recommend.js';
 import { setDisplayUnit } from './units.js';
 
 export const appState = {
@@ -19,6 +20,7 @@ export const appState = {
   mode: 'LIVE', // 'LIVE' (관측) | 'PLAN' (대응 수립)
   nowDay: LIVE.nowDay, // 실측/예측 경계. 화면에는 실제 일시로 표기된다.
   projectionRevealed: false, // LIVE 에서 '이대로 두면?' 을 실행했는가
+  recommendations: [], // 파생 — 진단 기반 Action 추천 (src/recommend.js)
   result: null, // 파생 — 저장하지 않는다
   counterfactual: null,
   baseline: null, // 파생 — 장애/Action 을 제거한 무장애 기준선 (원가 귀속의 기준점)
@@ -28,7 +30,7 @@ export const appState = {
   view: 'NETWORK', // 'NETWORK' | 'FLOW' | 'COST'
   displayUnit: 'MWh',
   watchlist: [],
-  panel: null, // 'INSPECTOR'|'SCENARIO'|'PLANNING'|'CUSTOMERS'|'ONTOLOGY'
+  panel: null, // 'INSPECTOR'|'SCENARIO'|'PLANNING'|'ONTOLOGY'
   showCounterfactual: false,
   playing: false,
   speed: 1,
@@ -90,7 +92,24 @@ function scheduleTts() {
     lastTts = computeTTS(appState.config);
     if (appState.result) appState.result.tts = lastTts;
     emitData();
+    // 추천은 TTS 가 채워진 뒤에 계산한다 — 위험도 근거로 TTS 를 쓰기 때문이다.
+    scheduleRecommend();
   }, 400);
+}
+
+let recTimer = null;
+function scheduleRecommend() {
+  // 후보마다 runSim 을 한 번씩 더 돌리므로(≈5ms×N) TTS 와 같이 뒤로 미룬다.
+  clearTimeout(recTimer);
+  recTimer = setTimeout(() => {
+    try {
+      appState.recommendations = recommend(appState);
+    } catch (e) {
+      console.warn('추천 계산 실패', e);
+      appState.recommendations = [];
+    }
+    emitData();
+  }, 120);
 }
 
 /** 레버/장애/Action 변경 진입점. 120ms 디바운스 후 전체 재계산. */
@@ -186,6 +205,31 @@ export function applyPreset(id) {
   commit();
 }
 
+/**
+ * 추천 승인 → 실행. 추천 카드의 '승인' 버튼이 부르는 유일한 경로다.
+ *
+ * 계획 파라미터 조정(configPatch)과 설비/물류 Action 은 반영 경로가 다르다 —
+ * 전자는 계획 레이어 자체를 바꾸는 것이라 즉시 적용되고, 후자는 그 계획
+ * 레이어를 통과해 '최단 적용 가능일'에 발효된다. 추천 카드가 보여준
+ * effectiveDay 와 실제 발효일이 어긋나면 안 되므로 여기서도 같은 계산을 쓴다.
+ */
+export function approveRecommendation(rec) {
+  if (rec.configPatch) {
+    for (const [k, v] of Object.entries(rec.configPatch.planning || {})) {
+      appState.config.planning[k] = v;
+    }
+  } else {
+    const lag = earliestApplicableDay(appState.config.planning, appState.nowDay);
+    const a = { ...rec.action };
+    if (a.type === 'expediteLane') a.startDay = lag.effectiveDay;
+    else a.day = lag.effectiveDay;
+    appState.config.actions.push(a);
+  }
+  // 승인하면 그 화면은 더 이상 관측이 아니다 — 대응 검토 모드로 넘어간다.
+  if (appState.mode === 'LIVE') appState.mode = 'PLAN';
+  commit();
+}
+
 /** Ontology Action — 실제로 시뮬레이션 상태를 바꾼다 (§3.5 / §4.4-⑤) */
 export function pushSimAction(action) {
   appState.config.actions.push(action);
@@ -223,12 +267,19 @@ export function setPlayhead(d) {
 
 export function setSelection(sel) {
   appState.selection = sel;
-  if (sel) appState.panel = sel.type === 'order' ? 'CUSTOMERS' : 'INSPECTOR';
+  if (sel) appState.panel = 'INSPECTOR';
   emitData();
 }
 
 export function setPanel(p) {
   appState.panel = appState.panel === p ? null : p;
+  emitData();
+}
+
+/** 토글이 아니라 '무조건 연다' — 자동 연출에서 이미 열려 있는 패널을 닫으면 안 된다. */
+export function openPanel(p) {
+  if (appState.panel === p) return;
+  appState.panel = p;
   emitData();
 }
 
@@ -246,14 +297,25 @@ export function setMode(m) {
   if (m === 'LIVE') {
     appState.playing = false;
     appState.playhead = appState.nowDay;
+    // SCENARIO 는 PLAN 전용이다. 열어 둔 채 LIVE 로 돌아오면 레일에서는
+    // 사라지는데 패널만 남아 닫을 방법이 없어지므로 여기서 함께 닫는다.
+    if (appState.panel === 'SCENARIO') appState.panel = null;
   }
   emitData();
 }
 
-/** LIVE 모드의 '이대로 두면?' — 예측 구간을 연다. 엔진은 다시 돌지 않는다. */
+/**
+ * LIVE 모드의 '이대로 두면?' — 예측 구간을 연다. 엔진은 다시 돌지 않는다.
+ *
+ * 여는 데서 끝내지 않고 관측 시점부터 지평선 끝까지 자동 재생을 요청한다.
+ * 숫자만 바뀌면 '무슨 일이 벌어지는지'가 안 보이고, 재생이 끝나야 담당자가
+ * 결과를 다 본 시점이므로 그때 AI 진단·추천을 연다 (ui.js 가 신호를 받는다).
+ */
 export function revealProjection() {
   appState.projectionRevealed = true;
+  appState.playhead = appState.nowDay;
   emitData();
+  window.dispatchEvent(new CustomEvent('projection-play'));
 }
 
 /** 관측 시점으로 복귀. */
@@ -270,6 +332,12 @@ export function resetToDesign() {
   appState.presetId = 'BASELINE';
   appState.lastApplyNotice = null;
   recomputeNow();
+}
+
+/** 재생 속도 — ADVANCED 패널과 재생 루프가 같은 값을 봐야 하므로 store 가 보유한다. */
+export function setSpeed(s) {
+  appState.speed = s;
+  emitData();
 }
 
 export function setUnit(u) {

@@ -7,7 +7,7 @@
 import { NODES } from '../data.js';
 import { el, clear, badge, sparkline } from '../components.js';
 import { usd, fmtNum, day as fmtDay, SEVERITY_GLYPH } from '../units.js';
-import { appState, setSelection, setPlayhead, setPanel, setView, revealProjection } from '../store.js';
+import { appState, setSelection, setPlayhead, setView, revealProjection } from '../store.js';
 import { fmtDate } from '../clock.js';
 
 let root = null;
@@ -140,12 +140,12 @@ export function render(state) {
     }));
     root.appendChild(kpi('OTD', `${fmtNum(a.otdPct, 1)}%`,
       `납기도래 ${a.ordersDue}건 중 정시 ${a.onTime}`,
-      () => { setPanel('CUSTOMERS'); },
+      () => setSelection({ type: 'customerGroup' }),
       a.otdPct >= 99 ? 'var(--status-ok)' : a.otdPct >= 90 ? 'var(--status-warn)' : 'var(--status-crit)'));
 
     root.appendChild(kpi('PENALTY 누계', usd(a.penaltyUSD),
       `지연 ${a.late} · 미인도 ${a.undelivered}`,
-      () => { setPanel('CUSTOMERS'); },
+      () => setSelection({ type: 'customerGroup' }),
       a.penaltyUSD > 0 ? 'var(--status-crit)' : 'var(--text-primary)'));
 
     root.appendChild(kpi('THRUPUT', `${fmtNum(a.thruput7d, 1)}`,
@@ -159,12 +159,12 @@ export function render(state) {
   } else {
     root.appendChild(kpi('OTD', `${fmtNum(s.otdPct, 1)}%`,
       `on-time ${s.ordersOnTime}/${s.ordersTotal}`,
-      () => { setPanel('CUSTOMERS'); },
+      () => setSelection({ type: 'customerGroup' }),
       s.otdPct >= 99 ? 'var(--status-ok)' : s.otdPct >= 90 ? 'var(--status-warn)' : 'var(--status-crit)'));
 
     root.appendChild(kpi('PENALTY', usd(s.totalPenaltyUSD),
       `지연 ${s.ordersLate} · 미인도 ${s.ordersUndelivered}`,
-      () => { setPanel('CUSTOMERS'); },
+      () => setSelection({ type: 'customerGroup' }),
       s.totalPenaltyUSD > 0 ? 'var(--status-crit)' : 'var(--text-primary)'));
 
     root.appendChild(kpi('THRUPUT', `${fmtNum(s.throughputMWhPerDay[day], 1)}`,

@@ -51,11 +51,8 @@ export function render(state) {
     sub: (v) => (v === 0 ? '장애를 즉시 인지합니다' : `장애 발생 ${v}일 뒤에야 계획이 인지`),
     onInput: (v) => setPlanning('infoLagDays', v),
   }));
-  levers.appendChild(selectField({
-    label: '배분 규칙', value: pl.allocationRule,
-    options: ALLOCATION_RULES.map((r) => ({ value: r.id, label: `${r.label} — ${r.desc}` })),
-    onChange: (v) => setPlanning('allocationRule', v),
-  }));
+  // 배분 규칙은 ADVANCED 패널로 이동했다 (총 생산량이 아니라 순서만 바꾸는 값이라
+  // 진단 화면의 주 레버와 성격이 다르다).
   levers.appendChild(slider({
     label: 'Horizon', value: state.config.horizonDays, min: 30, max: 240, step: 30, unit: 'day', digits: 0,
     onInput: (v) => { state.config.horizonDays = v; setPlanning('replanCycleDays', pl.replanCycleDays); },
@@ -74,7 +71,7 @@ export function render(state) {
   cmp.appendChild(el('div', { style: { marginTop: '6px' } },
     el('button', {
       class: `btn wide${state.showCounterfactual ? ' primary' : ''}`,
-      text: '◫ 반사실 오버레이',
+      text: '◫ 즉시 대응 시 절감효과',
       onclick: toggleCounterfactual,
     })));
   cmp.appendChild(callout(

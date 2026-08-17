@@ -79,16 +79,9 @@ export function render(state) {
     value: state.config.stochastic,
     onChange: (v) => setGlobal('stochastic', v),
   }));
-  sto.appendChild(slider({
-    label: 'Monte Carlo 실행 횟수', value: state.config.monteCarloRuns,
-    min: 20, max: 500, step: 20, digits: 0, unit: 'runs',
-    onInput: (v) => { state.config.monteCarloRuns = v; },
-  }));
-  sto.appendChild(slider({
-    label: '시드', value: state.config.seed, min: 1, max: 99999999, step: 1, digits: 0,
-    sub: () => '시드 고정 시 재실행 결과 완전 동일',
-    onInput: (v) => setGlobal('seed', v),
-  }));
+  // 실행 횟수 · 시드 · 삼각분포 상세는 ADVANCED 패널로 이동했다.
+  sto.appendChild(el('div', { class: 'ctrl-note',
+    text: `${state.config.monteCarloRuns} runs · seed ${state.config.seed} — 상세 조정은 ADVANCED 패널` }));
 
   const runBtn = button('▶ MONTE CARLO 실행', () => runMonteCarlo(state), 'primary');
   runBtn.classList.add('wide');

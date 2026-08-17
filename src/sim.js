@@ -21,7 +21,7 @@
 
 import {
   NODES, HUB, CUSTOMERS, LANES, LANE_TYPES, UNITS, SIM,
-  CELL_IDS, PACK_IDS, LINK_IDS, milesBetween, PO_BASE_YEAR_MONTH,
+  CELL_IDS, PACK_IDS, LINK_IDS, milesBetween, PO_BASE_YEAR_MONTH, STOCHASTIC_DEFAULTS,
 } from './data.js';
 import * as COST from './cost.js';
 import { COST_BUCKETS } from './cost.js';
@@ -325,6 +325,8 @@ export function runSim(config) {
   const H = config.horizonDays;
   const rng = mulberry32(config.seed);
   const stochastic = !!config.stochastic;
+  // 구 config(해시 링크 등)에는 stochasticParams 가 없을 수 있으므로 기본값으로 받는다.
+  const stoch = config.stochasticParams || STOCHASTIC_DEFAULTS;
   const leversAt = buildLeverResolver(config);
   const cost = config.cost;
 
@@ -593,7 +595,10 @@ export function runSim(config) {
     }
 
     if (expedited) transit = Math.max(1, Math.round(transit * lc.expediteSpeedup));
-    if (stochastic) transit = Math.max(1, Math.round(triangular(rng, transit, transit * 1.15, transit * 1.6)));
+    if (stochastic) {
+      const t = stoch.transitTriangular;
+      transit = Math.max(1, Math.round(triangular(rng, transit * t.min, transit * t.mode, transit * t.max)));
+    }
 
     const arriveDay = day + transit;
     const shp = {
@@ -788,7 +793,10 @@ export function runSim(config) {
       todayDown[n.id] = down;
 
       let capa = down ? 0 : effectiveDailyOutput(lev) * dis.capacityFactor;
-      if (stochastic && capa > 0) capa *= triangular(rng, 0.85, 1.0, 1.05);
+      if (stochastic && capa > 0) {
+        const o = stoch.outputTriangular;
+        capa *= triangular(rng, o.min, o.mode, o.max);
+      }
       todayCapacity[n.id] = capa;
     }
     capacityHistory[day] = todayCapacity;

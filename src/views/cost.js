@@ -208,7 +208,7 @@ function chartArea(state, cf, chartH, mode) {
     row.appendChild(waterfall(steps(state.result, state.baseline, mode), half, chartH,
       '현재 (정보지연 있음)', true, mode));
     row.appendChild(waterfall(steps(cf, state.baseline, mode), half, chartH,
-      '반사실 (정보지연 0 · frozen 0)', false, mode));
+      '즉시 대응 시 (정보지연 0 · frozen 0)', false, mode));
     box.appendChild(row);
   }
   return box;

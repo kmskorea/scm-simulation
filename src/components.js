@@ -3,7 +3,7 @@
 // 여기에 데이터나 시뮬 로직을 두지 않는다. 순수 표현 계층.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { fmtNum } from './units.js';
+import { fmtNum, HEALTH, HEALTH_ORDER } from './units.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -283,6 +283,9 @@ export const ICONS = {
   planning: '<path d="M2 4h12v9H2zM2 7h12M5.5 2v3M10.5 2v3M5 10h2M9 10h2" />',
   customers: '<circle cx="5.5" cy="5" r="2" /><circle cx="11" cy="6.5" r="1.6" /><path d="M1.5 13c0-2.2 1.8-3.6 4-3.6s4 1.4 4 3.6M10 9.6c2 0 4 1 4 3.4" />',
   ontology: '<circle cx="8" cy="3" r="1.6" /><circle cx="3" cy="12" r="1.6" /><circle cx="13" cy="12" r="1.6" /><path d="M7 4.4 4 10.5M9 4.4l3 6.1M4.6 12h6.8" />',
+  // AI — 큰 스파클 + 작은 스파클. 현재 AI 기능의 통용 기호이고, 노드-링크
+  // 아이콘(ontology)과 형태가 완전히 달라 레일에서 혼동되지 않는다.
+  ai: '<path d="M6.2 1.8 7.4 5 10.6 6.2 7.4 7.4 6.2 10.6 5 7.4 1.8 6.2 5 5z" /><path d="M11.8 9 12.5 11 14.5 11.7 12.5 12.4 11.8 14.4 11.1 12.4 9.1 11.7 11.1 11z" />',
   settings: '<circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" />',
   watchlist: '<path d="M8 1.8l1.8 4.1 4.4.4-3.3 2.9 1 4.3L8 11.2 4.1 13.5l1-4.3L1.8 6.3l4.4-.4z" />',
 };
@@ -299,4 +302,20 @@ export function icon(name) {
   s.setAttribute('stroke-linejoin', 'round');
   s.innerHTML = ICONS[name] || '';
   return s;
+}
+
+// ── 상태 범례 (§4.1 / §4.2) ─────────────────────────────────────────────
+/**
+ * NETWORK · FLOW 가 공유하는 상태 글리프 범례. 두 뷰가 같은 기호를 쓰므로
+ * 범례도 한 곳에서만 만든다 — 각자 그리면 반드시 어긋난다.
+ */
+export function healthLegend(opts = {}) {
+  const box = el('div', { class: `health-legend${opts.inline ? ' inline' : ''}` });
+  for (const id of HEALTH_ORDER) {
+    const h = HEALTH[id];
+    box.appendChild(el('span', { class: 'hl-item', title: `${h.label} · ${h.ko}` },
+      el('span', { class: 'hl-glyph', style: { color: h.color }, text: h.glyph }),
+      el('span', { class: 'hl-label', text: h.label })));
+  }
+  return box;
 }

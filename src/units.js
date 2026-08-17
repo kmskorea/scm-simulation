@@ -85,3 +85,40 @@ export const STATUS_CLASS = {
 };
 
 export const SEVERITY_GLYPH = { INFO: '●', WARN: '▲', CRIT: '■' };
+
+// ── 노드 건강 상태 (§4.1 / §4.2 범례) ──────────────────────────────────────
+//
+// 엔진의 상태(RUNNING/BLOCKED/STARVED/DOWN)는 '지금 무슨 일이 벌어지고 있나'만
+// 말한다. 담당자가 실제로 알고 싶은 것은 거기에 '얼마나 급한가'가 더해진
+// 것이므로, 실제 상태와 TTS(잔여 생존일)를 합쳐 5단계로 요약한다.
+//
+// 판정 순서가 중요하다 — 지금 멈춰 있는 것이 앞으로 위험한 것보다 급하다.
+//   DOWN            → CRITICAL   (라인이 서 있다)
+//   BLOCKED         → BLOCKED    (밀어낼 곳이 없다)
+//   STARVED         → STARVED    (받을 것이 없다)
+//   RUNNING + TTS↓  → AT_RISK    (아직 돌지만 곧 무너진다)
+//   그 외           → NORMAL
+export const HEALTH = {
+  CRITICAL: { id: 'CRITICAL', glyph: '●', label: 'Critical', ko: '정지', color: 'var(--status-crit)' },
+  AT_RISK: { id: 'AT_RISK', glyph: '▲', label: 'At risk', ko: '위험', color: 'var(--status-warn)' },
+  BLOCKED: { id: 'BLOCKED', glyph: '❙❙', label: 'Blocked', ko: '적체', color: 'var(--status-warn)' },
+  STARVED: { id: 'STARVED', glyph: '▼', label: 'Starved', ko: '결품', color: 'var(--status-danger)' },
+  NORMAL: { id: 'NORMAL', glyph: '✓', label: 'Normal', ko: '정상', color: 'var(--status-ok)' },
+};
+
+/** 범례 표시 순서 — 심각한 것부터. */
+export const HEALTH_ORDER = ['CRITICAL', 'AT_RISK', 'NORMAL', 'BLOCKED', 'STARVED'];
+
+const AT_RISK_TTS_DAYS = 30;
+
+/**
+ * @param {string} state  엔진 상태 (RUNNING/BLOCKED/STARVED/DOWN)
+ * @param {number|null} tts  잔여 생존일. null 이면 지평선 내 위험 없음.
+ */
+export function nodeHealth(state, tts) {
+  if (state === 'DOWN') return HEALTH.CRITICAL;
+  if (state === 'BLOCKED') return HEALTH.BLOCKED;
+  if (state === 'STARVED') return HEALTH.STARVED;
+  if (tts != null && tts <= AT_RISK_TTS_DAYS) return HEALTH.AT_RISK;
+  return HEALTH.NORMAL;
+}

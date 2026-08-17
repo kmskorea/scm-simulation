@@ -24,6 +24,7 @@ import {
 } from '../sim.js';
 import { reading } from '../telemetry.js';
 import { fmtAgo } from '../clock.js';
+import { overview as customerOverview } from './customers.js';
 
 export const title = 'Inspector';
 
@@ -37,7 +38,17 @@ export function render(state) {
   if (sel.type === 'node') return nodeInspector(state, sel.id);
   if (sel.type === 'lane') return laneInspector(state, sel.id);
   if (sel.type === 'hub') return hubInspector(state);
+  if (sel.type === 'customerGroup') return customerGroupInspector(state);
   if (sel.type === 'customer' || sel.type === 'order') return customerInspector(state, sel);
+  return box;
+}
+
+/** FLOW 의 CUSTOMERS 열을 클릭했을 때 — 고객 12곳 전체 + PO 48건. */
+function customerGroupInspector(state) {
+  const box = el('div');
+  box.appendChild(head('CUSTOMERS', `${CUSTOMERS.length}개 사이트 · PO ${state.result.orders.length}건`,
+    el('button', { class: 'btn', text: '✕ 닫기', onclick: () => setSelection(null) })));
+  box.appendChild(customerOverview(state));
   return box;
 }
 
