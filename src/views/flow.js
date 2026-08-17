@@ -17,7 +17,8 @@ let refs = null;
 let dims = { w: 900, h: 560 };
 
 const CARD = { w: 128, h: 44 };
-const COLS = ['CELL', 'PACK', 'TRANSIT', 'LINK', 'CUSTOMERS'];
+const COLS = ['RAW MATERIAL', 'CELL', 'PACK', 'TRANSIT', 'LINK', 'CUSTOMERS'];
+const RAW_W = 92; // 원자재 공급 열 — 카드보다 좁게 둬서 '범위 밖'임을 형태로 드러낸다
 
 export function mount(container) {
   root = container;
@@ -38,8 +39,8 @@ export function render(state) {
   const marginX = 24;
   const usable = dims.w - marginX * 2;
   // 열 x 좌표 — TRANSIT 열이 파이프라인 재고를 담는 넓은 여백이다
-  const colW = [CARD.w, CARD.w, Math.max(150, usable * 0.24), CARD.w, Math.max(150, usable * 0.22)];
-  const gap = Math.max(18, (usable - colW.reduce((a, b) => a + b, 0)) / 4);
+  const colW = [RAW_W, CARD.w, CARD.w, Math.max(140, usable * 0.20), CARD.w, Math.max(140, usable * 0.20)];
+  const gap = Math.max(14, (usable - colW.reduce((a, b) => a + b, 0)) / (colW.length - 1));
   const colX = [];
   let cx = marginX;
   for (const w of colW) { colX.push(cx); cx += w + gap; }
@@ -57,32 +58,48 @@ export function render(state) {
   const yLink = top + 10 + (cellGap * CELL_IDS.length - CARD.h) / 2;
 
   const pos = {};
-  CELL_IDS.forEach((id, i) => (pos[id] = [colX[0], yOfCell(i)]));
-  PACK_IDS.forEach((id, i) => (pos[id] = [colX[1], yOfPack(i)]));
-  pos.AZL = [colX[3], yLink];
+  CELL_IDS.forEach((id, i) => (pos[id] = [colX[1], yOfCell(i)]));
+  PACK_IDS.forEach((id, i) => (pos[id] = [colX[2], yOfPack(i)]));
+  pos.AZL = [colX[4], yLink];
 
   // ── 흐름 밴드 (굵기 = MWh/day) ───────────────────────────────────────
   const bandLayer = svg('g', { opacity: 0.5 });
   s.appendChild(bandLayer);
+
+  // 원자재 → Cell. 무한 공급 가정이라 물량 데이터가 없으므로 굵기를 계산하지
+  // 않고 고정 점선으로 둔다 — 실제 흐름 밴드와 형태로 구분되어야 한다.
+  const rawLayer = svg('g');
+  s.appendChild(rawLayer);
+  for (const cid of CELL_IDS) {
+    const [cxCell, cyCell] = pos[cid];
+    rawLayer.appendChild(svg('line', {
+      x1: colX[0] + RAW_W, y1: yOfCell(CELL_IDS.indexOf(cid)) + CARD.h / 2,
+      x2: cxCell, y2: cyCell + CARD.h / 2,
+      stroke: 'var(--border-strong)', 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.7,
+    }));
+  }
 
   for (const cid of CELL_IDS) {
     for (const pid of PACK_IDS) {
       const lane = `${cid}->${pid}`;
       const band = svg('path', { d: '', fill: 'var(--accent-dim)', opacity: 0.55 });
       bandLayer.appendChild(band);
-      refs.bands[lane] = { el: band, from: pos[cid], to: pos[pid], x0: colX[0] + CARD.w, x1: colX[1] };
+      refs.bands[lane] = { el: band, from: pos[cid], to: pos[pid], x0: colX[1] + CARD.w, x1: colX[2] };
     }
   }
   for (const pid of PACK_IDS) {
     const lane = `${pid}->AZL`;
     const band = svg('path', { d: '', fill: 'var(--accent-dim)', opacity: 0.55 });
     bandLayer.appendChild(band);
-    refs.bands[lane] = { el: band, from: pos[pid], to: pos.AZL, x0: colX[1] + CARD.w, x1: colX[3] };
+    refs.bands[lane] = { el: band, from: pos[pid], to: pos.AZL, x0: colX[2] + CARD.w, x1: colX[4] };
   }
 
+  // ── 원자재 공급 (범위 밖) ────────────────────────────────────────────
+  s.appendChild(rawMaterialCard(colX[0], yOfCell(0), yOfCell(CELL_IDS.length - 1) + CARD.h));
+
   // ── TRANSIT 열: 이동 중 화물 점 ──────────────────────────────────────
-  const tx = colX[2];
-  const tw = colW[2];
+  const tx = colX[3];
+  const tw = colW[3];
   s.appendChild(svg('rect', {
     x: tx - 6, y: top, width: tw + 12, height: dims.h - top - 60,
     fill: 'none', stroke: 'var(--border)', 'stroke-width': 1, 'stroke-dasharray': '2 4',
@@ -102,16 +119,46 @@ export function render(state) {
   }
 
   // ── 고객 열 ──────────────────────────────────────────────────────────
-  s.appendChild(customerColumn(colX[4], colW[4], top + 6, state));
-
-  // 상류 무한공급 가정 라벨
-  s.appendChild(svg('text', {
-    x: marginX, y: dims.h - 34, class: 'svg-caption',
-    text: 'UPSTREAM: UNCONSTRAINED — 양극재/음극재/분리막/전해액 무한 공급 가정 (§9-1)',
-  }));
+  s.appendChild(customerColumn(colX[5], colW[5], top + 6, state));
 
   root.appendChild(s);
   frame(state);
+}
+
+/**
+ * 원자재 공급 — 양극재/음극재/분리막/전해액. 모델링 범위 밖이라 제약이 없다.
+ * Cell 카드마다 'UPSTREAM: UNCONSTRAINED' 를 반복해 찍는 대신 공급원을 하나의
+ * 객체로 세워, 무한 공급이 '가정'임을 흐름도의 구조로 드러낸다.
+ */
+function rawMaterialCard(x, yTop, yBottom) {
+  const h = Math.max(CARD.h, yBottom - yTop);
+  const g = svg('g');
+  g.appendChild(svg('rect', {
+    x, y: yTop, width: RAW_W, height: h,
+    fill: 'none', stroke: 'var(--border-strong)', 'stroke-width': 1, 'stroke-dasharray': '3 3',
+  }));
+  const cy = yTop + h / 2;
+  g.appendChild(svg('text', {
+    x: x + RAW_W / 2, y: cy - 16, 'text-anchor': 'middle',
+    class: 'flow-card-title', fill: 'var(--text-secondary)', text: '원자재',
+  }));
+  g.appendChild(svg('text', {
+    x: x + RAW_W / 2, y: cy - 3, 'text-anchor': 'middle',
+    class: 'svg-caption', text: '양극재 · 음극재',
+  }));
+  g.appendChild(svg('text', {
+    x: x + RAW_W / 2, y: cy + 7, 'text-anchor': 'middle',
+    class: 'svg-caption', text: '분리막 · 전해액',
+  }));
+  g.appendChild(svg('text', {
+    x: x + RAW_W / 2, y: cy + 24, 'text-anchor': 'middle',
+    class: 'svg-caption', fill: 'var(--status-idle)', text: 'UNCONSTRAINED',
+  }));
+  g.appendChild(svg('text', {
+    x: x + RAW_W / 2, y: cy + 34, 'text-anchor': 'middle',
+    class: 'svg-caption', text: '(범위 밖 · §9-1)',
+  }));
+  return g;
 }
 
 function nodeCard(n, x, y, state) {
@@ -132,30 +179,31 @@ function nodeCard(n, x, y, state) {
   const outLabel = svg('text', { x: 10, y: 26, class: 'flow-card-sub', text: '' });
   grp.appendChild(outLabel);
 
-  // 입고 / 출고 게이지 — 이 뷰의 핵심
-  const gw = CARD.w - 20;
+  // 입고 / 출고 게이지 — 이 뷰의 핵심. 좌측에 IN/OUT 라벨 자리를 비워 둔다.
+  const GAUGE_X = 26;
+  const gw = CARD.w - GAUGE_X - 10;
   const mkGauge = (yy) => {
-    const bg = svg('rect', { x: 10, y: yy, width: gw, height: 5, fill: 'var(--bg-app)', stroke: 'var(--border)', 'stroke-width': 1 });
-    const fg = svg('rect', { x: 11, y: yy + 1, width: 0, height: 3, fill: 'var(--accent)' });
+    const bg = svg('rect', { x: GAUGE_X, y: yy, width: gw, height: 5, fill: 'var(--bg-app)', stroke: 'var(--border)', 'stroke-width': 1 });
+    const fg = svg('rect', { x: GAUGE_X + 1, y: yy + 1, width: 0, height: 3, fill: 'var(--accent)' });
     grp.appendChild(bg); grp.appendChild(fg);
     return fg;
   };
+  // 게이지 앞에 무엇을 재는 선인지 적는다 — 두 줄이 무엇인지 모르면
+  // 이 뷰의 핵심(출고 100% = BLOCKED, 입고 0% = STARVED)이 읽히지 않는다.
+  const gaugeTag = (yy, text) => svg('text', {
+    x: 4, y: yy + 4.5, class: 'flow-gauge-tag', text,
+  });
   const inBar = mkGauge(31);
   const outBar = mkGauge(38);
-  // Cell 은 입고 게이지 자리에 상류 무한공급 가정을 그대로 표기한다 (§4.2).
-  // 헤더에 붙이면 노드 ID 와 글자가 붙어 버린다.
-  const inTag = svg('text', {
-    x: 10, y: 35.5, class: 'flow-card-sub', text: '',
-    style: 'paint-order:stroke; stroke:var(--bg-panel); stroke-width:3px',
-  });
-  grp.appendChild(inTag);
+  grp.appendChild(gaugeTag(31, 'IN'));
+  grp.appendChild(gaugeTag(38, 'OUT'));
 
   grp.addEventListener('mouseenter', (e) => showTip(e, cardTip(n.id)));
   grp.addEventListener('mousemove', moveTip);
   grp.addEventListener('mouseleave', hideTip);
   grp.addEventListener('click', () => setSelection({ type: 'node', id: n.id }));
 
-  refs.cards[n.id] = { grp, statusBar, outLabel, inBar, outBar, inTag, stateTag, gw };
+  refs.cards[n.id] = { grp, statusBar, outLabel, inBar, outBar, stateTag, gw };
   return grp;
 }
 
@@ -214,11 +262,26 @@ function custTip(id) {
   ].filter(Boolean).join('\n');
 }
 
+/** 밴드(refs.bands 의 키는 '${from}->${to}' 형태 lane id)로 직접 이어진 상대 노드 id 집합. */
+function connectedNodeIds(nodeId) {
+  const out = new Set();
+  for (const laneId of Object.keys(refs.bands)) {
+    const [from, to] = laneId.split('->');
+    if (from === nodeId) out.add(to);
+    else if (to === nodeId) out.add(from);
+  }
+  return out;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 export function frame(state) {
   if (!refs || !state.result) return;
   const day = state.playhead;
   const r = state.result;
+  const sel = state.selection;
+  // 선택된 노드와 직접 연결된(밴드로 이어진) 노드 id 집합 — 선택 노드는
+  // 최대 밝기, 연결 노드 · 밴드는 중간 밝기, 무관한 것들만 어둡게 뺀다.
+  const connected = sel && sel.type === 'node' ? connectedNodeIds(sel.id) : null;
 
   for (const n of NODES) {
     const ref = refs.cards[n.id];
@@ -238,13 +301,12 @@ export function frame(state) {
     ref.outBar.setAttribute('fill', outF > 0.95 ? 'var(--status-warn)' : 'var(--cyan)');
     ref.stateTag.textContent = st === 'RUNNING' ? '' : st;
     ref.stateTag.setAttribute('fill', STATUS_COLOR[st]);
-    ref.inTag.textContent = n.type === 'CELL' ? 'UPSTREAM: UNCONSTRAINED' : '';
-    ref.inTag.setAttribute('fill', 'var(--text-muted)');
     // Cell 은 입고 제약이 없으므로 게이지 자체를 숨긴다
     ref.inBar.setAttribute('opacity', n.type === 'CELL' ? 0 : 1);
 
-    const sel = state.selection;
-    ref.grp.setAttribute('opacity', !sel || (sel.type === 'node' && sel.id === n.id) ? 1 : 0.35);
+    const isSel = sel && sel.type === 'node' && sel.id === n.id;
+    const isConnected = connected?.has(n.id);
+    ref.grp.setAttribute('opacity', !sel ? 1 : isSel ? 1 : isConnected ? 0.75 : 0.3);
   }
 
   // 흐름 밴드 — 최근 7일 이동평균
@@ -259,6 +321,10 @@ export function frame(state) {
     maxMA = Math.max(maxMA, ma[id]);
   }
   for (const [id, b] of Object.entries(refs.bands)) {
+    const [from, to] = id.split('->');
+    const touchesSel = sel && sel.type === 'node' && (from === sel.id || to === sel.id);
+    b.el.setAttribute('opacity', !sel ? 0.55 : touchesSel ? 0.9 : 0.1);
+
     const t = ma[id] / maxMA;
     const h = t * 12;
     if (h < 0.35) { b.el.setAttribute('d', ''); continue; }

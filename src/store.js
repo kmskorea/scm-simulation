@@ -9,16 +9,21 @@
 //   → 렌더. 재생/스크럽은 이 result 의 k일 슬라이스만 읽으며 엔진을 부르지 않는다.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { buildDefaultConfig, PRESETS } from './data.js';
+import { buildDefaultConfig, buildLiveConfig, PRESETS, LIVE } from './data.js';
 import { runSim, computeTTS, counterfactualConfig, earliestApplicableDay } from './sim.js';
 import { setDisplayUnit } from './units.js';
 
 export const appState = {
-  config: buildDefaultConfig(),
-  mode: 'DESIGN', // 'DESIGN' | 'OPERATE'
+  // 시작 상태는 '현장에서 관측된 지금' 이다 — 설계 기준선이 아니라.
+  config: buildLiveConfig(),
+  mode: 'LIVE', // 'LIVE' (관측) | 'PLAN' (대응 수립)
+  nowDay: LIVE.nowDay, // 실측/예측 경계. 화면에는 실제 일시로 표기된다.
+  projectionRevealed: false, // LIVE 에서 '이대로 두면?' 을 실행했는가
   result: null, // 파생 — 저장하지 않는다
   counterfactual: null,
-  playhead: 0,
+  baseline: null, // 파생 — 장애/Action 을 제거한 무장애 기준선 (원가 귀속의 기준점)
+  costMode: 'DELTA', // 'DELTA' | 'ABS' — COST 뷰 표시 기준
+  playhead: LIVE.nowDay, // 시작 지점은 '지금' — 해시가 있으면 readHash 가 덮어쓴다
   selection: null, // { type: 'node'|'lane'|'hub'|'customer'|'order', id }
   view: 'NETWORK', // 'NETWORK' | 'FLOW' | 'COST'
   displayUnit: 'MWh',
@@ -29,7 +34,7 @@ export const appState = {
   speed: 1,
   mc: null, // Monte Carlo 결과 (§3.6)
   mcProgress: 0,
-  lastApplyNotice: null, // OPERATE 모드 최단 적용 가능일 안내
+  lastApplyNotice: null, // PLAN 모드 최단 적용 가능일 안내
   presetId: 'BASELINE',
 };
 
@@ -48,10 +53,27 @@ export function emitFrame() { for (const f of subs.frame) f(appState); }
 let dataTimer = null;
 let ttsTimer = null;
 
+/**
+ * 무장애 기준선 config — 장애와 대응 Action 을 모두 제거한다.
+ * 원가를 "장애에 귀속되는 몫"으로 분해하려면 비교 기준이 필요하다. 특송 같은
+ * 대응 Action 도 장애가 없었으면 발생하지 않았을 비용이므로 함께 제거한다.
+ */
+function baselineConfig(config) {
+  return { ...config, disruptions: [], actions: [] };
+}
+
+/** 장애도 Action 도 없으면 기준선이 곧 현재 시나리오다 — run 을 아낀다. */
+function isUndisrupted(config) {
+  return config.disruptions.length === 0 && config.actions.length === 0;
+}
+
 export function recomputeNow() {
   const t0 = performance.now();
   appState.result = runSim(appState.config);
   appState.counterfactual = runSim(counterfactualConfig(appState.config));
+  appState.baseline = isUndisrupted(appState.config)
+    ? appState.result
+    : runSim(baselineConfig(appState.config));
   if (appState.result.tts == null && lastTts) appState.result.tts = lastTts;
   appState.playhead = Math.min(appState.playhead, appState.config.horizonDays - 1);
   appState.lastComputeMs = performance.now() - t0;
@@ -82,20 +104,21 @@ export function commit() {
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * 생산 노드 레버 변경.
- * DESIGN 모드 → config 를 직접 바꾼다 (D+0 부터 적용).
- * OPERATE 모드 → 계획 레이어가 계산한 '최단 적용 가능일'에 발효되는 Action 으로
- *                큐에 넣는다. 컨트롤을 잠그지 않고 경고만 표시한다 (§8).
+ * 생산 노드 레버 변경 — 항상 계획 레이어를 경유한다.
+ *
+ * D+0 부터 소급 적용하던 DESIGN 모드는 없앴다. 관측된 현재(LIVE)를 기준으로
+ * 삼는 이상 이미 계측된 과거를 다시 쓰는 것은 성립하지 않는다. 모든 조정은
+ * '최단 적용 가능일'에 발효되는 Action 으로 큐에 들어간다.
+ *
+ * 컨트롤은 어떤 모드에서도 잠그지 않는다 (§8). LIVE 에서 레버를 건드리면
+ * 그 화면은 더 이상 관측이 아니므로 PLAN 으로 넘어간다 — 슬라이더를 당겼는데
+ * 아무 일도 일어나지 않는 막다른 상태를 만들지 않기 위해서다.
  */
 export function setNodeLever(nodeId, key, value) {
-  if (appState.mode === 'DESIGN') {
-    appState.config.nodes[nodeId][key] = value;
-    appState.lastApplyNotice = null;
-  } else {
-    const lag = earliestApplicableDay(appState.config.planning, appState.playhead);
-    upsertAction('rescheduleProduction', nodeId, lag.effectiveDay, { [key]: value });
-    appState.lastApplyNotice = { nodeId, key, value, ...lag };
-  }
+  if (appState.mode === 'LIVE') appState.mode = 'PLAN';
+  const lag = earliestApplicableDay(appState.config.planning, appState.playhead);
+  upsertAction('rescheduleProduction', nodeId, lag.effectiveDay, { [key]: value });
+  appState.lastApplyNotice = { nodeId, key, value, ...lag };
   commit();
 }
 
@@ -181,10 +204,11 @@ export function resetNode(nodeId) {
   commit();
 }
 
+/** 조정한 레버·주입한 장애를 걷어내고 '현재 관측된 현장 상태'로 되돌린다. */
 export function resetAll() {
-  appState.config = buildDefaultConfig();
+  appState.config = buildLiveConfig();
   appState.mc = null;
-  appState.presetId = 'BASELINE';
+  appState.presetId = 'LIVE';
   appState.lastApplyNotice = null;
   recomputeNow();
 }
@@ -217,7 +241,35 @@ export function setView(v) {
 export function setMode(m) {
   appState.mode = m;
   appState.lastApplyNotice = null;
+  // LIVE 는 '지금'을 보는 모드다. 플레이헤드를 관측 시점에 고정하고
+  // 재생을 멈춘다 — 과거를 훑는 것은 진단이 아니라 분석이다.
+  if (m === 'LIVE') {
+    appState.playing = false;
+    appState.playhead = appState.nowDay;
+  }
   emitData();
+}
+
+/** LIVE 모드의 '이대로 두면?' — 예측 구간을 연다. 엔진은 다시 돌지 않는다. */
+export function revealProjection() {
+  appState.projectionRevealed = true;
+  emitData();
+}
+
+/** 관측 시점으로 복귀. */
+export function goToNow() {
+  appState.playhead = appState.nowDay;
+  emitFrame();
+  writeHash();
+}
+
+/** 설계 기준선(nameplate)으로 되돌린다 — 현장 실측 편차를 걷어낸 상태. */
+export function resetToDesign() {
+  appState.config = buildDefaultConfig();
+  appState.mc = null;
+  appState.presetId = 'BASELINE';
+  appState.lastApplyNotice = null;
+  recomputeNow();
 }
 
 export function setUnit(u) {
@@ -240,6 +292,11 @@ export function isWatched(type, id) {
 
 export function toggleCounterfactual() {
   appState.showCounterfactual = !appState.showCounterfactual;
+  emitData();
+}
+
+export function setCostMode(m) {
+  appState.costMode = m;
   emitData();
 }
 
@@ -304,7 +361,7 @@ export function readHash() {
     appState.config = mergeDeep(buildDefaultConfig(), p.c || {});
     appState.playhead = p.d ?? 0;
     appState.view = p.v || 'NETWORK';
-    appState.mode = p.m || 'DESIGN';
+    appState.mode = p.m === 'PLAN' ? 'PLAN' : 'LIVE'; // 구 DESIGN/OPERATE 해시는 LIVE 로 흡수
     appState.displayUnit = p.u || 'MWh';
     setDisplayUnit(appState.displayUnit);
     appState.presetId = 'CUSTOM';

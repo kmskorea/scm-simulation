@@ -401,8 +401,91 @@ export function buildDefaultConfig() {
     planning: { ...PLANNING_DEFAULTS },
     cost: JSON.parse(JSON.stringify(COST_DEFAULTS)),
     disruptions: [], // §3.5
-    actions: [], // OPERATE 모드 Action 큐 — { day, type, ... }
+    actions: [], // PLAN 모드 Action 큐 — { day, type, ... }
   };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 10-B. 라이브 운영 상태 (LIVE 모드)
+//
+// 디지털 트윈의 본질은 '설계값(nameplate)'과 '실측값(observed)'의 괴리다.
+// buildDefaultConfig() 는 설계값 그대로를 유지한다 — 검증 게이트(§3.9)가
+// 엔진 건전성을 판별하는 기준이 이것이기 때문이다. 현장에서 관측된 편차는
+// buildLiveConfig() 가 그 위에 얹는다.
+//
+// 왜 레버(availability)가 아니라 capacityDrop 인가 —
+//   레버로 낮추면 계획 레이어가 낮아진 capa 를 그대로 반영해 전 구간을
+//   매끄럽게 흡수한다(BLOCKED/STARVED 0일). 현장은 이미 망가졌는데 화면은
+//   평온한, 진단이 불가능한 상태가 된다. capacityDrop 은 '계획이 아직 모르는
+//   사건'이므로 상류 Blocking → 하류 Starving 캐스케이드가 실제로 나타난다.
+//   측정값: Cell BLOCKED 47일 · PW2 STARVED 7일 · OTD 95.8% · LD $102,822
+// ───────────────────────────────────────────────────────────────────────────
+const SURGE_DAY = 75; // 90일 전망의 약 45일차
+const SURGE_DAY_2 = 98;
+
+/** 전 고객 동시 수요 증가 — demandSpike 는 고객 단위라 12건으로 펼친다. */
+function demandSurge(startDay, multiplier) {
+  return CUSTOMERS.map((c) => ({ type: 'demandSpike', target: c.id, startDay, multiplier }));
+}
+
+export const LIVE = {
+  // 관측 시점. 이 앞은 실측 구간, 뒤는 예측 구간이다.
+  // 화면에는 'D+030' 이 아니라 실제 현재 일시로 표기된다 (src/clock.js).
+  nowDay: 30,
+
+  // ① 지금 계측되고 있는 편차 — PW1 가동률이 설계 대비 28% 낮다.
+  observed: [
+    { type: 'capacityDrop', target: 'PW1', startDay: 0, durationDays: 999, pct: 0.28 },
+  ],
+
+  // ② 예측 구간에 전개되는 사건.
+  //
+  //   수요는 2단으로 올라간다(총 +25%). demandSpike 는 demandRateAt() 을 통해
+  //   계획 레이어 입력에 그대로 반영되므로 PW2 의 계획 생산율도 함께 올라간다.
+  //   그런데 capacityDrop / yieldDrop 은 실행 시점에만 적용되어 계획이 모른다 —
+  //   즉 '계획은 늘어난 수요만큼 뽑으라고 지시하는데 현장의 가동률·수율이
+  //   따라가지 못하는' 상태가 만들어진다. 이것이 Pack 병목의 실체다.
+  //
+  //   저하를 2단으로 나눈 이유: 한 번에 떨어뜨리면 계통이 낮은 처리량으로
+  //   재수렴하면서 D+100 이후 상태 플래그가 전부 꺼진다(문제가 해소된 것처럼
+  //   보인다). 단계적으로 악화시켜야 90일 끝까지 병목이 살아 있다.
+  projected: [
+    ...demandSurge(SURGE_DAY, 1.14),
+    ...demandSurge(SURGE_DAY_2, 1.10),
+    { type: 'capacityDrop', target: 'PW2', startDay: SURGE_DAY, durationDays: 999, pct: 0.11 },
+    { type: 'yieldDrop', target: 'PW2', startDay: SURGE_DAY, durationDays: 999, deltaPct: -0.04 },
+    { type: 'capacityDrop', target: 'PW2', startDay: SURGE_DAY_2, durationDays: 999, pct: 0.10 },
+    { type: 'yieldDrop', target: 'PW2', startDay: SURGE_DAY_2, durationDays: 999, deltaPct: -0.04 },
+  ],
+};
+
+/** LIVE 기본 세팅의 전체 사건 목록. */
+export function liveDisruptions() {
+  return JSON.parse(JSON.stringify([...LIVE.observed, ...LIVE.projected]));
+}
+
+/**
+ * 노드별 계측 태그. 값 자체가 아니라 '어디서 들어온 데이터인가'를 보여준다.
+ * staleMinutes 가 있으면 그 노드는 수신이 끊긴 것으로 표시한다 — 전 노드가
+ * 항상 초록인 피드는 오히려 가짜처럼 보인다.
+ */
+export const TELEMETRY = {
+  ESMI_H: { src: 'MES', tag: 'ESMI-H.L1.OEE', intervalSec: 30 },
+  ESMI_L: { src: 'MES', tag: 'ESMI-L.L1.OEE', intervalSec: 30 },
+  ESST: { src: 'SCADA', tag: 'ESST.PLC.AVAIL', intervalSec: 60 },
+  ESHD: { src: 'SCADA', tag: 'ESHD.PLC.AVAIL', intervalSec: 60, staleMinutes: 252 },
+  UC2: { src: 'MES', tag: 'UC2.L1.OEE', intervalSec: 30 },
+  PW1: { src: 'MES', tag: 'PW1.PACK.OEE', intervalSec: 15 },
+  PW2: { src: 'MES', tag: 'PW2.PACK.OEE', intervalSec: 15 },
+  AZL: { src: 'SCADA', tag: 'AZL.LINK.AVAIL', intervalSec: 15 },
+  CHI: { src: 'WMS', tag: 'CHI.DOCK.THRU', intervalSec: 300 },
+};
+
+/** 설계 기준선 + 현장 실측 편차. LIVE / PLAN 모드의 시작 상태다. */
+export function buildLiveConfig() {
+  const cfg = buildDefaultConfig();
+  cfg.disruptions = liveDisruptions();
+  return cfg;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

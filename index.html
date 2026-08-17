@@ -26,9 +26,13 @@
     <div class="topbar-spacer"></div>
 
     <div class="topbar-right">
-      <div class="segmented" id="mode-toggle" title="DESIGN: D+0부터 적용 · OPERATE: 플레이헤드 시점부터 적용">
-        <button data-mode="DESIGN" aria-pressed="true">Design</button>
-        <button data-mode="OPERATE" aria-pressed="false">Operate</button>
+      <div id="live-badge" title="현장 계측 수신 상태">
+        <span class="dot"></span><span class="txt">LIVE</span><span class="sync mono"></span>
+      </div>
+      <div id="sim-badge" hidden title="관측된 현장 상태가 아니라 사용자가 조정한 가정입니다">SIMULATION</div>
+      <div class="segmented" id="mode-toggle" title="LIVE: 현장 실측 모니터링 · PLAN: 현 시점부터 대응 수립 (계획 레이어 경유)">
+        <button data-mode="LIVE" aria-pressed="true">Live</button>
+        <button data-mode="PLAN" aria-pressed="false">Plan</button>
       </div>
       <button class="searchbar" id="search-open">
         <span>노드 · 고객 · PO 검색</span>
@@ -81,7 +85,8 @@
     <button class="transport-btn" id="btn-back" title="7일 뒤로 (Shift+←)">◀◀</button>
     <button class="transport-btn" id="btn-play" title="재생 / 정지 (Space)">▶</button>
     <button class="transport-btn" id="btn-fwd" title="7일 앞으로 (Shift+→)">▶▶</button>
-    <span id="playhead-label" class="mono">D+000 / 120</span>
+    <span id="playhead-label" class="mono">—</span>
+    <button class="btn" id="btn-now" title="관측 시점(현재)으로 이동">◉ NOW</button>
     <input type="range" id="scrub" min="0" max="119" step="1" value="0" />
     <div class="segmented" id="speed-toggle">
       <button data-speed="0.5">0.5x</button>

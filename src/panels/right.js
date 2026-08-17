@@ -7,7 +7,8 @@
 import { NODES } from '../data.js';
 import { el, clear, badge, sparkline } from '../components.js';
 import { usd, fmtNum, day as fmtDay, SEVERITY_GLYPH } from '../units.js';
-import { appState, setSelection, setPlayhead, setPanel, setView } from '../store.js';
+import { appState, setSelection, setPlayhead, setPanel, setView, revealProjection } from '../store.js';
+import { fmtDate } from '../clock.js';
 
 let root = null;
 // 예외 우선 (§4.8) — 기본은 WARN/CRIT 만. 정상이면 NO ACTIVE EXCEPTIONS 한 줄.
@@ -15,6 +16,93 @@ let sevFilter = 'EXCEPTIONS';
 
 export function mount(container) {
   root = container;
+}
+
+/**
+ * '이대로 두면?' — 현재 관측 상태가 지속된다고 볼 때의 착지점.
+ * 엔진은 이미 120일을 계산해 뒀으므로 새로 돌지 않는다. 이 카드가 하는 일은
+ * 계산이 아니라 서사다 — 담당자가 '진단을 실행했다'는 행위를 만들어 준다.
+ */
+function projectionCard(state) {
+  const box = el('div', { style: { padding: '8px 12px', borderBottom: '1px solid var(--border)' } });
+  const s = state.result.system;
+
+  if (!state.projectionRevealed) {
+    box.appendChild(el('div', {
+      class: 'tiny muted', style: { marginBottom: '6px', lineHeight: '1.5' },
+      text: '현재 계측 상태가 이대로 지속된다고 가정하고 향후 90일을 투영합니다.',
+    }));
+    box.appendChild(el('button', {
+      class: 'btn primary', style: { width: '100%' },
+      text: '▶ 이대로 두면? · 90일 전망',
+      onclick: () => revealProjection(),
+    }));
+    return box;
+  }
+
+  const bad = s.otdPct < 99;
+  box.appendChild(el('div', { class: 'section-label', style: { padding: '0 0 4px' } },
+    el('span', { text: '90일 전망 · 현 상태 지속 시' })));
+  const row = (k, v, color) => el('div', { class: 'spread', style: { marginTop: '3px' } },
+    el('span', { class: 'tiny muted', text: k }),
+    el('span', { class: 'mono tiny', style: color ? { color } : {}, text: v }));
+  box.appendChild(row('OTD 착지', `${fmtNum(s.otdPct, 1)}%`,
+    bad ? 'var(--status-crit)' : 'var(--status-ok)'));
+  box.appendChild(row('LD 페널티', usd(s.costBreakdown.ldPenalty),
+    s.costBreakdown.ldPenalty > 0 ? 'var(--status-crit)' : null));
+  box.appendChild(row('일실 산출', `${fmtNum(s.totalLostOutputMWh, 1)} MWh`));
+  box.appendChild(row('총원가', usd(s.totalCostUSD)));
+  box.appendChild(el('div', {
+    class: 'tiny muted', style: { marginTop: '6px', lineHeight: '1.45' },
+    text: 'PLAN 모드로 전환하면 지금 시점에서 조정 가능한 레버와 그 최단 적용 가능일을 검토할 수 있습니다.',
+  }));
+  return box;
+}
+
+/**
+ * 관측 시점까지의 '실적' 집계. 120일 누계를 그대로 보여주면 버튼을 누르기 전에
+ * 전망 결과가 새어 나가, 진단 → 투영이라는 순서 자체가 무너진다.
+ *
+ * 일자별 시계열이 있는 항목(LD 누계 · 처리량 · 상태 타임라인)만 창을 잘라
+ * 계산한다. 원가는 일별 시계열이 없으므로 여기서는 아예 내보내지 않는다 —
+ * 없는 값을 추정해 KPI 자리에 채우면 그건 실적이 아니라 창작이다.
+ */
+function actualsToDate(state) {
+  const r = state.result;
+  const now = Math.min(state.nowDay, r.system.horizonDays - 1);
+
+  // 납기가 이미 도래한 PO 만 대상으로 한다. 아직 안 온 납기를 분모에 넣으면
+  // 실적이 실제보다 나빠 보인다.
+  const due = r.orders.filter((o) => o.dueDay <= now);
+  const onTime = due.filter((o) => o.deliveredDay != null && o.deliveredDay <= o.dueDay).length;
+  const late = due.filter((o) => o.deliveredDay != null && o.deliveredDay > o.dueDay).length;
+  const undelivered = due.filter((o) => o.deliveredDay == null).length;
+
+  let blocked = 0, starved = 0;
+  for (const n of NODES) {
+    const tl = r.perNode[n.id].stateTimeline;
+    for (let d = 0; d <= now; d++) {
+      if (tl[d] === 'BLOCKED') blocked++;
+      if (tl[d] === 'STARVED') starved++;
+    }
+  }
+
+  // 처리량은 최근 7일 이동평균 — '지금 얼마나 나오고 있는가'가 관심사다.
+  const from = Math.max(0, now - 6);
+  let acc = 0;
+  for (let d = from; d <= now; d++) acc += r.system.throughputMWhPerDay[d] || 0;
+
+  return {
+    now,
+    otdPct: due.length ? (onTime / due.length) * 100 : 100,
+    ordersDue: due.length,
+    onTime, late, undelivered,
+    penaltyUSD: r.system.costSeries.ldPenalty[now] || 0,
+    totalCostUSD: r.system.totalCostSeries[now] || 0,
+    thruput7d: acc / (now - from + 1),
+    demandNow: r.system.demandRateSeries[now] || 0,
+    blocked, starved,
+  };
 }
 
 export function render(state) {
@@ -27,7 +115,9 @@ export function render(state) {
   // ── SYSTEM STATUS ─────────────────────────────────────────────────────
   root.appendChild(el('div', { class: 'panel-head' },
     el('span', { text: 'System Status' }),
-    badge(state.mode, state.mode === 'OPERATE' ? 'warn' : 'info')));
+    badge(state.mode, state.mode === 'LIVE' ? 'ok' : 'warn')));
+
+  if (state.mode === 'LIVE') root.appendChild(projectionCard(state));
 
   const kpi = (label, value, sub, onclick, color) => {
     const row = el('div', { class: 'kpi-row', onclick });
@@ -39,23 +129,52 @@ export function render(state) {
   };
 
   const s = r.system;
-  root.appendChild(kpi('OTD', `${fmtNum(s.otdPct, 1)}%`,
-    `on-time ${s.ordersOnTime}/${s.ordersTotal}`,
-    () => { setPanel('CUSTOMERS'); },
-    s.otdPct >= 99 ? 'var(--status-ok)' : s.otdPct >= 90 ? 'var(--status-warn)' : 'var(--status-crit)'));
+  // LIVE 에서 아직 투영을 실행하지 않았다면 관측 시점까지의 실적만 보여준다.
+  const toDate = state.mode === 'LIVE' && !state.projectionRevealed;
 
-  root.appendChild(kpi('PENALTY', usd(s.totalPenaltyUSD),
-    `지연 ${s.ordersLate} · 미인도 ${s.ordersUndelivered}`,
-    () => { setPanel('CUSTOMERS'); },
-    s.totalPenaltyUSD > 0 ? 'var(--status-crit)' : 'var(--text-primary)'));
+  if (toDate) {
+    const a = actualsToDate(state);
+    root.appendChild(el('div', {
+      class: 'kpi-sub', style: { padding: '4px 12px 0', color: 'var(--text-muted)' },
+      text: `실적 누계 · ${fmtDate(0)} ~ 현재`,
+    }));
+    root.appendChild(kpi('OTD', `${fmtNum(a.otdPct, 1)}%`,
+      `납기도래 ${a.ordersDue}건 중 정시 ${a.onTime}`,
+      () => { setPanel('CUSTOMERS'); },
+      a.otdPct >= 99 ? 'var(--status-ok)' : a.otdPct >= 90 ? 'var(--status-warn)' : 'var(--status-crit)'));
 
-  root.appendChild(kpi('THRUPUT', `${fmtNum(s.throughputMWhPerDay[day], 1)}`,
-    `계획 ${fmtNum(s.demandRateSeries[day], 1)} MWh/day`,
-    () => setView('FLOW')));
+    root.appendChild(kpi('PENALTY 누계', usd(a.penaltyUSD),
+      `지연 ${a.late} · 미인도 ${a.undelivered}`,
+      () => { setPanel('CUSTOMERS'); },
+      a.penaltyUSD > 0 ? 'var(--status-crit)' : 'var(--text-primary)'));
 
-  root.appendChild(kpi('TOTAL COST', usd(s.totalCostUSD),
-    `blocked ${s.totalBlockedDays}d · starved ${s.totalStarvedDays}d`,
-    () => setView('COST')));
+    root.appendChild(kpi('THRUPUT', `${fmtNum(a.thruput7d, 1)}`,
+      `최근 7일 평균 · 계획 ${fmtNum(a.demandNow, 1)} MWh/day`,
+      () => setView('FLOW'),
+      a.thruput7d < a.demandNow * 0.95 ? 'var(--status-warn)' : null));
+
+    root.appendChild(kpi('TOTAL COST 누계', usd(a.totalCostUSD),
+      `blocked ${a.blocked}d · starved ${a.starved}d`,
+      () => setView('COST')));
+  } else {
+    root.appendChild(kpi('OTD', `${fmtNum(s.otdPct, 1)}%`,
+      `on-time ${s.ordersOnTime}/${s.ordersTotal}`,
+      () => { setPanel('CUSTOMERS'); },
+      s.otdPct >= 99 ? 'var(--status-ok)' : s.otdPct >= 90 ? 'var(--status-warn)' : 'var(--status-crit)'));
+
+    root.appendChild(kpi('PENALTY', usd(s.totalPenaltyUSD),
+      `지연 ${s.ordersLate} · 미인도 ${s.ordersUndelivered}`,
+      () => { setPanel('CUSTOMERS'); },
+      s.totalPenaltyUSD > 0 ? 'var(--status-crit)' : 'var(--text-primary)'));
+
+    root.appendChild(kpi('THRUPUT', `${fmtNum(s.throughputMWhPerDay[day], 1)}`,
+      `계획 ${fmtNum(s.demandRateSeries[day], 1)} MWh/day`,
+      () => setView('FLOW')));
+
+    root.appendChild(kpi('TOTAL COST', usd(s.totalCostUSD),
+      `blocked ${s.totalBlockedDays}d · starved ${s.totalStarvedDays}d`,
+      () => setView('COST')));
+  }
 
   // 반사실 3열
   if (state.showCounterfactual && cf) {
@@ -98,7 +217,8 @@ export function render(state) {
   }
 
   // ── ALERT FEED ────────────────────────────────────────────────────────
-  const alerts = r.events.filter((e) =>
+  // 투영 전에는 아직 일어나지 않은 사건을 띄우지 않는다.
+  const alerts = r.events.filter((e) => (toDate ? e.day <= state.nowDay : true)).filter((e) =>
     sevFilter === 'ALL' ? true
       : sevFilter === 'EXCEPTIONS' ? e.severity !== 'INFO'
       : e.severity === sevFilter);
@@ -147,11 +267,19 @@ function throughputChart(state) {
   const r = state.result;
   const w = 280;
   const h = 40;
-  const series = r.system.throughputMWhPerDay;
-  const max = Math.max(...series, ...r.system.demandRateSeries, 1) * 1.1;
+  // 투영 전에는 관측 구간까지만 그린다 — 전체를 그리면 수요 서지가 그래프
+  // 모양으로 먼저 보여서 '이대로 두면?' 이 물어볼 것이 남지 않는다.
+  const toDate = state.mode === 'LIVE' && !state.projectionRevealed;
+  const cut = toDate ? Math.min(state.nowDay + 1, r.system.horizonDays) : r.system.horizonDays;
+  const series = r.system.throughputMWhPerDay.slice(0, cut);
+  const demandSeries = r.system.demandRateSeries.slice(0, cut);
+  const max = Math.max(...series, ...demandSeries, 1) * 1.1;
 
   const box = el('div', { style: { position: 'relative' } });
-  const line = sparkline(series, { width: w, height: h, max, color: 'var(--cyan)', marker: state.playhead });
+  const line = sparkline(series, {
+    width: w, height: h, max, color: 'var(--cyan)',
+    marker: Math.min(state.playhead, cut - 1),
+  });
 
   // 확률 모드 P10/P90 밴드를 배경에 (§1.5.4)
   if (state.mc?.throughputBand) {
@@ -169,7 +297,9 @@ function throughputChart(state) {
     line.insertBefore(band, line.children[1] || null);
   }
   box.appendChild(line);
+  const avg = series.reduce((a, b) => a + b, 0) / Math.max(1, series.length);
+  const dem = demandSeries.reduce((a, b) => a + b, 0) / Math.max(1, demandSeries.length);
   box.appendChild(el('div', { class: 'kpi-sub', style: { marginTop: '2px' },
-    text: `평균 ${fmtNum(r.system.throughputAvg, 2)} / 수요 ${fmtNum(r.system.demandAvg, 2)} MWh/day` }));
+    text: `${toDate ? '실적' : '평균'} ${fmtNum(avg, 2)} / 수요 ${fmtNum(dem, 2)} MWh/day` }));
   return box;
 }

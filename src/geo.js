@@ -30,7 +30,11 @@ export function albersRaw(lng, lat) {
   if (q < 0) return null;
   const rho = Math.sqrt(q) / N;
   const theta = N * lambda;
-  return [rho * Math.sin(theta), RHO_0 - rho * Math.cos(theta)];
+  // Snyder 의 원뿔 등적 공식은 위도가 높아질수록(북쪽) y 가 커지는 수학
+  // 좌표계다. SVG 는 y 가 아래로 증가하므로 그대로 쓰면 남북이 뒤집힌다
+  // (d3 는 이 지점에서 스케일 변환 시 y 부호를 뒤집는데, 이 구현은 원시
+  // 투영을 직접 계산하므로 여기서 부호를 뒤집어야 한다).
+  return [rho * Math.sin(theta), rho * Math.cos(theta) - RHO_0];
 }
 
 // 본토 외곽 범위 — fitExtent 기준점 (미국 48주 대략 bbox 둘레를 샘플링)
@@ -112,6 +116,55 @@ export function geoPathString(geometry, project) {
   };
   walk(geometry);
   return parts.join('');
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 본토(lower 48) 필터 — 실루엣 소스(topojson-client 의 'nation' 오브젝트)는
+// 알래스카 · 하와이 · 푸에르토리코 · 사모아 · 괌 등을 본토와 한 MultiPolygon
+// 으로 병합해 제공한다. 이 앱은 단일 원뿔(Albers) 투영 하나만 쓰므로 그
+// 지점들에 그대로 투영을 적용하면 실제 위치와 무관하게 화면 좌표가 크게
+// 왜곡되어 본토 옆(심하면 위)에 겹쳐 찍힌다. 본 네트워크의 모든 노드는
+// 본토에 있으므로, 실루엣을 그리기 전에 본토 범위 밖 폴리곤을 제거한다.
+// 경계값은 실제 데이터로 검증했다 — 본토 85개 폴리곤은 전부
+// lng −124.7..−67.0 / lat 24.5..49.4 안에 있고, 알래스카(위도 51+)·
+// 하와이(위도 22 이하)·그 외 도서는 전부 이 박스 밖에 있다.
+// ───────────────────────────────────────────────────────────────────────────
+const CONUS_FILTER = { lng0: -127, lng1: -64, lat0: 23, lat1: 50 };
+
+function ringCentroid(ring) {
+  let sumLng = 0, sumLat = 0;
+  for (const [lng, lat] of ring) { sumLng += lng; sumLat += lat; }
+  return [sumLng / ring.length, sumLat / ring.length];
+}
+
+function inConus([lng, lat]) {
+  return lng >= CONUS_FILTER.lng0 && lng <= CONUS_FILTER.lng1
+    && lat >= CONUS_FILTER.lat0 && lat <= CONUS_FILTER.lat1;
+}
+
+/**
+ * GeoJSON 노드에서 본토 범위 밖 폴리곤을 제거한다. Feature / FeatureCollection /
+ * GeometryCollection 을 재귀적으로 내려간다 — topojson-client 의 `feature()`
+ * 는 소스 오브젝트가 GeometryCollection 이면 Feature 가 아니라
+ * FeatureCollection 을 반환하므로(§us-atlas nation-10m 이 그렇다), 최상위가
+ * 어떤 타입으로 오든 동일하게 동작해야 한다.
+ */
+export function filterToConus(node) {
+  if (!node) return node;
+  switch (node.type) {
+    case 'FeatureCollection':
+      return { ...node, features: node.features.map(filterToConus) };
+    case 'Feature':
+      return { ...node, geometry: filterToConus(node.geometry) };
+    case 'GeometryCollection':
+      return { ...node, geometries: node.geometries.map(filterToConus) };
+    case 'MultiPolygon':
+      return { ...node, coordinates: node.coordinates.filter((poly) => inConus(ringCentroid(poly[0]))) };
+    case 'Polygon':
+      return inConus(ringCentroid(node.coordinates[0])) ? node : { ...node, coordinates: [] };
+    default:
+      return node;
+  }
 }
 
 /** 축척 바 라벨용 — 화면 80px 이 실제 몇 마일인지. */

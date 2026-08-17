@@ -15,9 +15,14 @@ LG에너지솔루션 북미 ESS 공급망(Cell → Pack → Link → 고객)의 
 빌드 도구가 필요 없다. ES modules 를 쓰므로 `file://` 이 아닌 로컬 서버로 열어야 한다.
 
 ```bash
-python3 -m http.server 8000
+node tools/serve.mjs 8000
 # → http://localhost:8000/index.html
 ```
+
+`python3 -m http.server 8000` 으로도 앱은 돌아간다. 다만 그쪽은 `Last-Modified` 만 주기
+때문에 브라우저가 ES module 을 휴리스틱 캐시로 잡아, 소스를 고쳐도 이전 버전이 계속 뜬다
+(하드 리로드로도 잘 안 풀린다). `tools/serve.mjs` 는 `Cache-Control: no-store` 를 붙여
+매 요청마다 새로 읽게 한다 — 개발 중 반복 확인용이고, 배포용 서버가 아니다.
 
 엔진만 헤드리스로 돌려 검증 게이트를 확인하려면:
 
@@ -109,6 +114,7 @@ src/views/            network · flow · cost · gantt
 src/panels/           inspector · scenario · planning · customers · ontology · right
 tools/validate.mjs    §3.9 검증 게이트
 tools/debug.mjs       노드 일별 추적 유틸
+tools/serve.mjs       개발용 정적 서버 (no-store — 모듈 캐시 방지)
 ```
 
 사양서의 파일 구조에 `geo.js` / `units.js` / `components.js` / `store.js` 를 추가했다.
@@ -318,6 +324,34 @@ penalty  = min(qty × 계약가 × 일률 × lateDays, qty × 계약가 × 상�
 | `inventoryValuePerMWh` | 180,000 | USD/MWh — **TODO: 실제 평가액** |
 
 **총비용 = 기준물류비 + Blocking 유휴 + Starving 유휴 + 초과보관비 + 특송비 + LD 페널티**
+
+#### COST 뷰는 왜 절대액이 아니라 Δ 를 기본으로 보여주는가
+
+기준 물류비는 `트럭 대수 × 거리 × 요율` 이라 **물량에 선형 비례**한다. 그 결과 두 가지가
+동시에 벌어진다.
+
+| | BASELINE | PW1 5일 정지 | PW1 15일 정지 |
+|---|---|---|---|
+| 기준 물류비 | $6,802,089 | $6,660,382 | $5,874,619 |
+| 총비용 대비 비중 | **99.98%** | 84.3% | 42.7% |
+| baseline 대비 Δ | — | **−$141,707** | **−$927,470** |
+
+1. baseline 에서는 총원가의 **99.98%** 를 차지한다. 절대 워터폴은 거대한 막대 하나와
+   보이지 않는 슬라이버 5개가 된다.
+2. 장애가 심해질수록 **줄어든다**. 물건이 안 움직이면 트럭이 덜 뜨기 때문이다
+   (3,251대 → 2,815대). 워터폴에서는 이게 "비용 절감"으로 읽히지만 실제로는 출하 실패의
+   증상이다. 즉 지연이 악화될수록 가장 큰 막대가 *반대 방향*으로 움직인다.
+
+인도 MWh 당 운임은 $2,701 → $2,655 로 **−1.7%** 밖에 안 움직인다. 운임 변동의 실체가
+효율이 아니라 물량 손실이라는 뜻이다.
+
+그래서 COST 뷰의 기본값은 **무장애 기준선(`disruptions: []`, `actions: []`) 대비 Δ** 다.
+물류비는 워터폴의 base 가 아니라 부호 있는 Δ 막대(`FREIGHT Δ · 미출하분`)로 내려가고,
+절대액은 헤더의 컨텍스트 수치로 빠진다. 헤드라인 숫자는 **장애 귀속 비용**이다.
+헤더의 `절대값` 토글로 기존 절대 스택도 그대로 볼 수 있다.
+
+기준선은 `store.js` 가 `recomputeNow()` 에서 함께 계산한다. 장애도 Action 도 없으면
+기준선이 곧 현재 시나리오이므로 run 을 건너뛴다(그때 Δ 는 전부 0 이고 뷰는 안내를 띄운다).
 
 ### 6.9 엔진 상수 — 실측값 부재, 전부 가정 (`SIM`)
 

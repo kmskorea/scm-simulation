@@ -12,10 +12,12 @@ import {
 } from './data.js';
 import { el, clear, icon, badge, section, kv, numberField, button } from './components.js';
 import { usd, fmtNum, day as fmtDay, setDisplayUnit } from './units.js';
+import { fmtDate, fmtDateTime, fmtClock } from './clock.js';
+import { linkHealth, isPristineLive } from './telemetry.js';
 import {
   appState, onData, onFrame, recomputeNow, readHash, writeHash,
   setPlayhead, setView, setMode, setUnit, setPanel, setSelection, resetAll,
-  toggleCounterfactual, setCost, setIdleCost,
+  toggleCounterfactual, setCost, setIdleCost, goToNow,
 } from './store.js';
 import * as networkView from './views/network.js';
 import * as flowView from './views/flow.js';
@@ -45,7 +47,9 @@ const VIEWS = {
 
 // ═══════════════════════════════════════════════════════════════════════
 function init() {
-  readHash();
+  // recomputeNow() 가 writeHash() 를 부르므로, 진입 시점에 해시가 있었는지는
+  // 여기서 붙잡아 둬야 한다 — 나중에 location.hash 를 보면 항상 참이다.
+  const restored = readHash();
   setDisplayUnit(appState.displayUnit);
 
   buildRail();
@@ -55,6 +59,7 @@ function init() {
   wireKeyboard();
   wireModals();
   wirePanelHold();
+  startLiveBadge();
 
   networkView.mount(document.getElementById('view-network'));
   flowView.mount(document.getElementById('view-flow'));
@@ -68,8 +73,8 @@ function init() {
 
   recomputeNow();
 
-  // TODAY 앵커 — 로드 시 현재 시뮬 일자로 진입 (§4.8)
-  if (!location.hash) setPlayhead(0);
+  // 로드 시 관측 시점(현재)으로 진입한다 — 담당자가 처음 보는 것은 '지금'이다.
+  if (!restored) setPlayhead(appState.nowDay);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -97,8 +102,17 @@ function renderAll(state) {
 
 function renderFrame(state) {
   const H = state.config.horizonDays;
-  document.getElementById('playhead-label').textContent =
-    `${fmtDay(state.playhead)} / ${H}`;
+  // 화면에는 D+n 이 아니라 실제 일시를 보여준다. 관측 시점이면 '현재',
+  // 그 이후는 예측 구간임을 라벨 자체에 못박는다.
+  const label = document.getElementById('playhead-label');
+  const isNow = state.playhead === state.nowDay;
+  const ahead = state.playhead - state.nowDay;
+  label.textContent = isNow
+    ? `${fmtDateTime(state.playhead)}  ·  현재`
+    : `${fmtDate(state.playhead)}  ·  ${ahead > 0 ? `예측 +${ahead}일` : `실측 ${ahead}일`}`;
+  label.classList.toggle('is-now', isNow);
+  label.classList.toggle('is-forecast', ahead > 0);
+
   const scrub = document.getElementById('scrub');
   scrub.max = String(H - 1);
   if (Number(scrub.value) !== state.playhead) scrub.value = String(state.playhead);
@@ -161,6 +175,35 @@ function syncTabs(state) {
   }
   document.getElementById('btn-cf').classList.toggle('primary', state.showCounterfactual);
   document.getElementById('unit-select').value = state.displayUnit;
+
+  // LIVE 는 '지금'을 보는 모드다 — 재생 · 스크럽을 잠근다.
+  const live = state.mode === 'LIVE';
+  for (const id of ['btn-back', 'btn-play', 'btn-fwd', 'scrub']) {
+    document.getElementById(id).disabled = live && !state.projectionRevealed;
+  }
+  document.getElementById('transport').classList.toggle('live-locked', live);
+
+  // 관측된 현장 상태를 벗어난 화면에만 SIMULATION 을 표기한다.
+  const simulated = !isPristineLive(state.config);
+  document.getElementById('sim-badge').hidden = !simulated;
+}
+
+// ── 계측 수신 배지 — 1초마다 갱신되는 유일한 곳 ─────────────────────────
+function startLiveBadge() {
+  const badge = document.getElementById('live-badge');
+  const sync = badge.querySelector('.sync');
+  const tick = () => {
+    const h = linkHealth();
+    badge.classList.toggle('degraded', !h.ok);
+    sync.textContent = h.ok
+      ? `${fmtClock()}  ·  ${h.online}/${h.total}`
+      : `${fmtClock()}  ·  ${h.online}/${h.total} 수신`;
+    badge.title = h.ok
+      ? `전 계측 정상 · 마지막 수신 ${fmtClock()}`
+      : `${h.staleIds.join(', ')} 수신 지연 · 마지막 수신 ${fmtClock()}`;
+  };
+  tick();
+  setInterval(tick, 1000);
 }
 
 // ── 어제 대비 델타 스트립 (§4.8) ────────────────────────────────────────
@@ -172,7 +215,7 @@ function renderDeltaStrip(state) {
   const prev = Math.max(0, d - 1);
 
   const wip = r.system.wipSeries[d] - r.system.wipSeries[prev];
-  const pen = r.system.cumPenaltySeries[d] - r.system.cumPenaltySeries[prev];
+  const pen = r.system.costSeries.ldPenalty[d] - r.system.costSeries.ldPenalty[prev];
   const thru = r.system.throughputMWhPerDay[d] - r.system.throughputMWhPerDay[prev];
   const it = r.system.inTransitSeries[d] - r.system.inTransitSeries[prev];
 
@@ -274,7 +317,9 @@ function wireTransport() {
   document.getElementById('btn-back').addEventListener('click', () => setPlayhead(appState.playhead - 7));
   document.getElementById('btn-fwd').addEventListener('click', () => setPlayhead(appState.playhead + 7));
   document.getElementById('scrub').addEventListener('input', (e) => setPlayhead(Number(e.target.value)));
-  document.getElementById('btn-reset').addEventListener('click', () => { stop(); resetAll(); setPlayhead(0); });
+  document.getElementById('btn-now').addEventListener('click', () => { stop(); goToNow(); });
+  // Reset 은 '관측된 현장 상태'로 되돌리는 것이므로 플레이헤드도 현재로 보낸다.
+  document.getElementById('btn-reset').addEventListener('click', () => { stop(); resetAll(); goToNow(); });
   document.getElementById('btn-cf').addEventListener('click', toggleCounterfactual);
   document.getElementById('speed-toggle').addEventListener('click', (e) => {
     const b = e.target.closest('button');

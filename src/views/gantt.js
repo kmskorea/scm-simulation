@@ -11,6 +11,7 @@ import { NODES } from '../data.js';
 import { svg, clear, showTip, moveTip, hideTip } from '../components.js';
 import { STATUS_COLOR, usd } from '../units.js';
 import { appState, setPlayhead, setSelection } from '../store.js';
+import { fmtDateShort, fmtDate } from '../clock.js';
 
 let root = null;
 let refs = null;
@@ -50,9 +51,30 @@ export function render(state) {
       stroke: 'var(--border)', 'stroke-width': 1, opacity: d % 30 === 0 ? 0.9 : 0.4,
     }));
     if (d % 20 === 0 && d < H) {
-      s.appendChild(svg('text', { x: x + 2, y: 9, class: 'svg-caption', text: `D+${d}` }));
+      s.appendChild(svg('text', { x: x + 2, y: 9, class: 'svg-caption', text: fmtDateShort(d) }));
     }
   }
+
+  // ── 예측 구간 + NOW 경계 ──────────────────────────────────────────────
+  // 관측 시점 이후는 계측이 아니라 가정이다. 실제 가림막은 상태 막대를 전부
+  // 그린 뒤에 덮어야 하므로(먼저 깔면 막대가 위로 올라온다) 여기서는 경계선만
+  // 세우고, 마스크는 render 말미의 maskForecast() 가 붙인다.
+  const hideForecast = state.mode === 'LIVE' && !state.projectionRevealed;
+  const nowX = xOf(state.nowDay, H);
+  if (!hideForecast) {
+    s.appendChild(svg('rect', {
+      x: nowX, y: AXIS_H - 3, width: Math.max(0, dims.w - PAD_R - nowX), height: dims.h - DUE_H - AXIS_H + 3,
+      fill: 'var(--bg-app)', opacity: 0.35,
+    }));
+  }
+  s.appendChild(svg('line', {
+    x1: nowX, x2: nowX, y1: 0, y2: dims.h - DUE_H,
+    stroke: 'var(--status-ok)', 'stroke-width': 1.5,
+  }));
+  s.appendChild(svg('text', {
+    x: nowX + 3, y: dims.h - DUE_H - 3, class: 'svg-caption',
+    fill: 'var(--status-ok)', text: 'NOW',
+  }));
 
   // ── 노드 행 ───────────────────────────────────────────────────────────
   NODES.forEach((n, i) => {
@@ -94,7 +116,7 @@ export function render(state) {
     hit.addEventListener('mousemove', (e) => {
       const d = dayFromEvent(e, H);
       showTip(e, [
-        `<b>${n.id}</b>  D+${d}`,
+        `<b>${n.id}</b>  ${fmtDate(d)}`,
         `상태  ${p.stateTimeline[d]}`,
         `산출  ${p.producedSeries[d].toFixed(2)} / 계획 ${p.planSeries[d].toFixed(2)} MWh`,
         `출고버퍼 ${((p.outputBufferSeries[d] / p.outputCapacity) * 100).toFixed(0)}%`,
@@ -119,8 +141,8 @@ export function render(state) {
     });
     m.addEventListener('mouseenter', (e) => showTip(e, [
       `<b>${o.id}</b>`,
-      `DUE      D+${o.dueDay}`,
-      `인도     ${o.deliveredDay != null ? 'D+' + o.deliveredDay : '미완료'}`,
+      `DUE      ${fmtDate(o.dueDay)}`,
+      `인도     ${o.deliveredDay != null ? fmtDate(o.deliveredDay) : '미완료'}`,
       `수량     ${o.qtyLinks.toFixed(1)} Link`,
       `상태     ${o.status}${o.lateDays ? ' · ' + o.lateDays + 'd 지연' : ''}`,
       o.penaltyUSD > 0 ? `LD       ${usd(o.penaltyUSD)}` : '',
@@ -129,6 +151,24 @@ export function render(state) {
     m.addEventListener('mouseleave', hideTip);
     m.addEventListener('click', () => setSelection({ type: 'order', id: o.id }));
     s.appendChild(m);
+  }
+
+  // ── 예측 구간 가림막 — 상태 막대 · 납기 마커를 전부 덮는다 ────────────
+  if (hideForecast) {
+    const mw = Math.max(0, dims.w - PAD_R - nowX);
+    s.appendChild(svg('rect', {
+      x: nowX, y: 0, width: mw, height: dims.h,
+      fill: 'var(--bg-app)', opacity: 0.96, 'pointer-events': 'none',
+    }));
+    s.appendChild(svg('text', {
+      x: nowX + mw / 2, y: (dims.h - DUE_H + AXIS_H) / 2, 'text-anchor': 'middle',
+      class: 'svg-caption', fill: 'var(--text-muted)', 'pointer-events': 'none',
+      text: '전망 미실행 — 우측 패널에서 90일 전망을 실행하세요',
+    }));
+    s.appendChild(svg('line', {
+      x1: nowX, x2: nowX, y1: 0, y2: dims.h - DUE_H,
+      stroke: 'var(--status-ok)', 'stroke-width': 1.5, 'pointer-events': 'none',
+    }));
   }
 
   // ── 현재 시점 커서 ────────────────────────────────────────────────────

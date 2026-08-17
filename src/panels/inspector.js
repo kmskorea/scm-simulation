@@ -2,7 +2,7 @@
 // src/panels/inspector.js — ① NODE / LANE / HUB / CUSTOMER INSPECTOR §4.4-①
 //
 // 레버는 어떤 상태에서도 잠기지 않는다 (§8). 재생 중에도 조정 가능하며,
-// OPERATE 모드에서는 계획 레이어가 계산한 '최단 적용 가능일'을 경고로 띄울 뿐
+// PLAN 모드에서는 계획 레이어가 계산한 '최단 적용 가능일'을 경고로 띄울 뿐
 // 컨트롤을 비활성화하지 않는다.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -22,6 +22,8 @@ import {
 import {
   effectiveDailyOutput, outputBufferCapacity, inputBufferCapacity, effectiveDailyInput,
 } from '../sim.js';
+import { reading } from '../telemetry.js';
+import { fmtAgo } from '../clock.js';
 
 export const title = 'Inspector';
 
@@ -57,6 +59,67 @@ function watchBtn(type, id) {
   });
 }
 
+// ── 계측 피드 ───────────────────────────────────────────────────────────
+/**
+ * 이 노드의 데이터가 '어디서, 언제' 들어왔는지. 값 자체가 아니라 출처와
+ * 신선도를 보여주는 줄이다 — 살아 있는 피드는 값보다 이쪽으로 먼저 읽힌다.
+ */
+function feedStrip(state, id) {
+  const t = reading(id, 1);
+  const live = state.mode === 'LIVE';
+  const dot = el('span', {
+    style: {
+      width: '5px', height: '5px', borderRadius: '50%', display: 'inline-block',
+      background: t.stale ? 'var(--status-warn)' : 'var(--status-ok)',
+    },
+  });
+  return el('div', {
+    style: {
+      display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap',
+      padding: '5px 10px', borderBottom: '1px solid var(--border)',
+      fontFamily: 'var(--mono)', fontSize: '9px', color: 'var(--text-muted)',
+    },
+  },
+    dot,
+    el('span', { style: { color: t.stale ? 'var(--status-warn)' : 'var(--status-ok)' }, text: t.src }),
+    el('span', { text: t.tag }),
+    el('span', { style: { marginLeft: 'auto' }, text: t.stale ? `수신 지연 · ${fmtAgo(t.ageSeconds)}` : fmtAgo(t.ageSeconds) }),
+    live ? null : el('span', { style: { color: 'var(--status-warn)' }, text: '· 가정값' }),
+  );
+}
+
+/**
+ * 설계값 대비 실측 편차. 디지털 트윈의 진단은 여기서 시작한다 —
+ * '계획은 88% 를 전제하는데 현장은 66% 로 돌고 있다'.
+ */
+function capacityDrift(state, id) {
+  const drop = (state.config.disruptions || []).find(
+    (d) => d.type === 'capacityDrop' && d.target === id && state.playhead >= d.startDay
+      && state.playhead < d.startDay + (d.durationDays ?? 9999)
+  );
+  if (!drop) return null;
+  const lev = state.config.nodes[id];
+  const planned = lev.availability * 100;
+  const actual = planned * (1 - drop.pct);
+  const t = reading(id, actual, { field: 'avail', jitterPct: 0.006 });
+
+  return el('div', {
+    style: { padding: '7px 10px', background: 'rgba(236,154,60,0.08)', borderBottom: '1px solid var(--border)' },
+  },
+    el('div', { class: 'spread' },
+      el('span', { class: 'tiny', style: { color: 'var(--status-warn)' }, text: '▲ 설계 대비 실측 편차' }),
+      el('span', { class: 'mono tiny', style: { color: 'var(--status-warn)' }, text: `−${fmtNum(planned - t.value, 1)}%p` })),
+    el('div', {
+      class: 'mono tiny', style: { marginTop: '3px', color: 'var(--text-secondary)' },
+      text: `가동률  설계 ${fmtNum(planned, 1)}%  │  실측 ${fmtNum(t.value, 1)}%`,
+    }),
+    el('div', {
+      class: 'tiny muted', style: { marginTop: '3px', lineHeight: '1.45' },
+      text: '계획 레이어는 아직 설계값을 전제로 생산율을 산출하고 있습니다. 이 격차가 상류 BLOCKING 의 원인입니다.',
+    }),
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // NODE INSPECTOR
 // ═══════════════════════════════════════════════════════════════════════
@@ -72,9 +135,13 @@ function nodeInspector(state, id) {
     el('div', { style: { display: 'flex', gap: '4px' } },
       badge(st, STATUS_CLASS[st]), badge(n.owner, 'muted'))));
 
+  box.appendChild(feedStrip(state, id));
+  const drift = capacityDrift(state, id);
+  if (drift) box.appendChild(drift);
+
   // ── 실시간 readout ────────────────────────────────────────────────────
   // draft 는 '사용자가 지금 돌리고 있는 값'의 사본이다. config 를 직접 만지면
-  // OPERATE 모드에서 이전 이력이 함께 바뀌어 버린다(§1.5.2 위반). 실제 반영은
+  // PLAN 모드에서 이전 이력이 함께 바뀌어 버린다(§1.5.2 위반). 실제 반영은
   // 반드시 setNodeLever() 를 통해서만 한다.
   const draft = { ...lev };
   const readout = el('div', { style: { padding: '8px 10px', background: 'var(--bg-elevated)' } });
@@ -92,7 +159,7 @@ function nodeInspector(state, id) {
   paintReadout();
   box.appendChild(readout);
 
-  if (state.mode === 'OPERATE') box.appendChild(operateNotice(state, id));
+  if (state.mode === 'PLAN') box.appendChild(planNotice(state, id));
 
   // ── 레버 ──────────────────────────────────────────────────────────────
   const levers = el('div');
@@ -163,10 +230,10 @@ function nodeInspector(state, id) {
 }
 
 /**
- * OPERATE 모드 최단 적용 가능일 경고 (§1.5.2).
+ * PLAN 모드 최단 적용 가능일 경고 (§1.5.2).
  * UI 가 임의로 거는 락이 아니라, 계획 시스템이 물리적으로 거는 락이다.
  */
-function operateNotice(state, nodeId) {
+function planNotice(state, nodeId) {
   const n = state.lastApplyNotice;
   const box = el('div', { style: { padding: '0 10px' } });
   const { infoLagDays, replanCycleDays, frozenWindowDays } = state.config.planning;

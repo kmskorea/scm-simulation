@@ -7,18 +7,17 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import {
-  NODES, HUB, CUSTOMERS, LANES, LABEL_OFFSETS, MAP_OFFSETS, META, CELL_IDS, PACK_IDS,
+  NODES, HUB, CUSTOMERS, LANES, LABEL_OFFSETS, MAP_OFFSETS, CELL_IDS, PACK_IDS,
   GEO_INDEX, isOverriddenDistance,
 } from '../data.js';
 import { svg, clear, showTip, moveTip, hideTip } from '../components.js';
-import { albersUsa, geoPathString, milesPerPixel } from '../geo.js';
+import { albersUsa, geoPathString, milesPerPixel, filterToConus } from '../geo.js';
 import { qty, usd, miles as fmtMiles, STATUS_COLOR, fmtNum } from '../units.js';
 import { appState, setSelection } from '../store.js';
 
 const NATION_URL = 'https://cdn.jsdelivr.net/npm/us-atlas@3/nation-10m.json';
 const TOPO_URL = 'https://cdn.jsdelivr.net/npm/topojson-client@3/+esm';
 
-const INSET = { w: 246, h: 202, pad: 12 };
 const MAX_DOTS = 40;
 
 let root = null;
@@ -41,7 +40,9 @@ async function loadSilhouette() {
   try {
     const topojson = await import(TOPO_URL);
     const topo = await fetch(NATION_URL).then((r) => r.json());
-    nationFeature = topojson.feature(topo, topo.objects.nation);
+    // 알래스카 · 하와이 등 도서는 이 앱의 단일 원뿔 투영에서 본토와 겹쳐
+    // 찍히므로 실루엣에서 제외한다 (src/geo.js 의 filterToConus 참고).
+    nationFeature = filterToConus(topojson.feature(topo, topo.objects.nation));
   } catch {
     // 네트워크가 없는 환경에서도 앱은 그대로 쓸 수 있어야 한다.
     nationFeature = null;
@@ -75,14 +76,14 @@ function nodeRadius(n) {
   const caps = NODES.map((x) => x.capaPerHour);
   const lo = Math.min(...caps);
   const hi = Math.max(...caps);
-  return 6 + ((n.capaPerHour - lo) / Math.max(1e-6, hi - lo)) * 6;
+  return 5 + ((n.capaPerHour - lo) / Math.max(1e-6, hi - lo)) * 5;
 }
 
 function customerRadius(c) {
   const links = CUSTOMERS.map((x) => x.monthlyLinks);
   const lo = Math.min(...links);
   const hi = Math.max(...links);
-  return 3 + ((c.monthlyLinks - lo) / Math.max(1e-6, hi - lo)) * 3;
+  return 2.5 + ((c.monthlyLinks - lo) / Math.max(1e-6, hi - lo)) * 2.5;
 }
 
 // ── 툴팁 ────────────────────────────────────────────────────────────────
@@ -147,15 +148,14 @@ export function render(state) {
   dims = { w: Math.max(320, rect.width), h: Math.max(240, rect.height) };
   clear(root);
 
-  const mapW = dims.w - INSET.w - INSET.pad * 2;
-
-  projection = albersUsa([[16, 16], [Math.max(200, mapW), dims.h - 34]]);
+  // 인셋을 없앤 뒤로는 지도가 뷰포트 폭 전체를 그대로 쓴다.
+  projection = albersUsa([[16, 16], [dims.w - 16, dims.h - 34]]);
 
   svgEl = svg('svg', { width: dims.w, height: dims.h, viewBox: `0 0 ${dims.w} ${dims.h}` });
   zoomG = svg('g', { class: 'zoom-layer' });
   svgEl.appendChild(zoomG);
 
-  refs = { nodes: {}, customers: {}, arcs: {}, dots: null, insetNodes: {} };
+  refs = { nodes: {}, customers: {}, arcs: {}, dots: null };
 
   drawSilhouette(zoomG);
   const groupLayer = svg('g'); zoomG.appendChild(groupLayer);
@@ -167,10 +167,10 @@ export function render(state) {
   drawArcs(arcLayer, state);
   drawCustomers(nodeLayer, state);
   drawNodes(nodeLayer, state);
-  drawInset(svgEl, state);
 
   root.appendChild(svgEl);
   drawChrome(root);
+  clampTransform();
   applyTransform();
   frame(state);
 }
@@ -200,16 +200,6 @@ function bboxOf(ids, pad) {
 }
 
 function drawGroups(g) {
-  const prod = bboxOf([...CELL_IDS, ...PACK_IDS], 26);
-  g.appendChild(svg('rect', {
-    x: prod.x, y: prod.y, width: prod.w, height: prod.h, rx: 2,
-    fill: 'none', stroke: 'var(--border-strong)', 'stroke-width': 1, 'stroke-dasharray': '3 3',
-  }));
-  g.appendChild(svg('text', {
-    x: prod.x, y: prod.y - 5, class: 'svg-sect', text: 'PRODUCTION',
-  }));
-  refs.prodBox = prod;
-
   const az = bboxOf(['AZL'], 30);
   g.appendChild(svg('rect', {
     x: az.x, y: az.y, width: az.w, height: az.h, rx: 2,
@@ -304,10 +294,14 @@ function drawNodes(g, state) {
   // Holland 3개소(ESMI_H · PW1 · PW2)는 상호 3마일 이내라 같은 픽셀에 찍힌다.
   // 개별 클릭이 가능하도록만 MAP_OFFSETS 로 살짝 벌리고 그 사실을 캡션으로 밝힌다.
   const holland = projectTrue('ESMI_H');
-  g.appendChild(svg('text', {
-    x: holland[0], y: holland[1] - 15,
-    'text-anchor': 'middle', class: 'svg-caption', text: 'HOLLAND, MI ×3',
+  const hollandCap = svg('g', { transform: `translate(${holland[0]},${holland[1]})` });
+  const hollandIcon = svg('g'); // 바로 옆 클러스터 아이콘과 같은 배율(updateIconScale)을 받는다
+  hollandCap.appendChild(hollandIcon);
+  hollandIcon.appendChild(svg('text', {
+    x: 0, y: -15, 'text-anchor': 'middle', class: 'svg-caption', text: 'HOLLAND, MI ×3',
   }));
+  g.appendChild(hollandCap);
+  refs.hollandIcon = hollandIcon;
 
   for (const n of [...NODES, HUB]) {
     const [x, y] = project(n.id);
@@ -317,36 +311,42 @@ function drawNodes(g, state) {
     // 위치만은 실제 투영 좌표를 유지한다: ESST 가 테네시에 있다는 사실은
     // 리드타임의 근거이므로 버리면 안 된다.
     const clustered = isClustered(n.id);
-    const r = clustered ? 4 : n.type === 'HUB' ? 8 : nodeRadius(n);
+    const r = clustered ? 3.5 : n.type === 'HUB' ? 7 : nodeRadius(n);
     const grp = svg('g', { transform: `translate(${x},${y})`, class: 'node-hit' });
+    // iconG 는 확대·축소를 상쇄하는 역배율을 받는다(updateIconScale) — 그래야
+    // 지도를 확대할수록 노드 사이 간격은 벌어지는데 아이콘 자체는 화면상
+    // 일정 크기를 유지해, 전국 스케일에서 겹쳐 보이던 클러스터가 확대하면
+    // 실제로 분리되어 보인다. 위치(translate)는 grp 에 남겨 팬·줌을 그대로 따른다.
+    const iconG = svg('g');
+    grp.appendChild(iconG);
 
     const ring = svg('path', {
-      d: symbolPath(n.type, r + (clustered ? 2 : 3.5)), fill: 'none',
-      stroke: 'var(--status-ok)', 'stroke-width': clustered ? 1.5 : 2,
+      d: symbolPath(n.type, r + (clustered ? 1.7 : 2.9)), fill: 'none',
+      stroke: 'var(--status-ok)', 'stroke-width': clustered ? 1.3 : 1.8,
     });
     const body = svg('path', {
       d: symbolPath(n.type, r),
       fill: n.type === 'HUB' ? 'none' : 'var(--bg-panel)',
       stroke: 'var(--text-secondary)', 'stroke-width': 1.2,
     });
-    grp.appendChild(ring);
-    grp.appendChild(body);
+    iconG.appendChild(ring);
+    iconG.appendChild(body);
 
     let gauges = null;
     if (n.type !== 'HUB' && !clustered) {
       gauges = gaugePair(r + 7, 0, r * 1.7);
-      grp.appendChild(gauges.inBg); grp.appendChild(gauges.outBg);
-      grp.appendChild(gauges.inBar); grp.appendChild(gauges.outBar);
+      iconG.appendChild(gauges.inBg); iconG.appendChild(gauges.outBg);
+      iconG.appendChild(gauges.inBar); iconG.appendChild(gauges.outBar);
     }
 
     if (!clustered) {
       const off = LABEL_OFFSETS[n.id] || { dx: 0, dy: -12, anchor: 'middle' };
-      grp.appendChild(svg('text', {
+      iconG.appendChild(svg('text', {
         x: off.dx, y: off.dy, 'text-anchor': off.anchor, class: 'svg-label',
         fill: 'var(--text-primary)', text: n.short || n.id,
       }));
       if (n.type === 'HUB') {
-        grp.appendChild(svg('text', {
+        iconG.appendChild(svg('text', {
           x: off.dx, y: off.dy + 10, 'text-anchor': off.anchor, class: 'svg-caption',
           text: 'CROSS-DOCK',
         }));
@@ -363,7 +363,7 @@ function drawNodes(g, state) {
       setSelection({ type: n.type === 'HUB' ? 'hub' : 'node', id: n.id }));
 
     g.appendChild(grp);
-    refs.nodes[n.id] = { grp, ring, body, gauges, type: n.type };
+    refs.nodes[n.id] = { grp, iconG, ring, body, gauges, type: n.type };
   }
 }
 
@@ -372,17 +372,19 @@ function drawCustomers(g, state) {
     const [x, y] = project(c.id);
     const r = customerRadius(c);
     const grp = svg('g', { transform: `translate(${x},${y})`, class: 'node-hit' });
+    const iconG = svg('g'); // updateIconScale 이 확대·축소 역배율을 준다
+    grp.appendChild(iconG);
     const body = svg('circle', {
       cx: 0, cy: 0, r, fill: 'none', stroke: 'var(--text-muted)', 'stroke-width': 1.2,
     });
     const marker = svg('path', {
-      d: 'M0,-11L3.4,-5.4L-3.4,-5.4z', fill: 'var(--status-crit)', opacity: 0,
+      d: 'M0,-9L2.9,-4.6L-2.9,-4.6z', fill: 'var(--status-crit)', opacity: 0,
     });
-    grp.appendChild(body);
-    grp.appendChild(marker);
+    iconG.appendChild(body);
+    iconG.appendChild(marker);
 
     const off = LABEL_OFFSETS[c.id] || { dx: 0, dy: -8, anchor: 'middle' };
-    grp.appendChild(svg('text', {
+    iconG.appendChild(svg('text', {
       x: off.dx, y: off.dy, 'text-anchor': off.anchor, class: 'svg-caption',
       text: c.poCode, // 주 코드는 CA 가 3곳이라 중복된다 — PO 코드가 고유하다
     }));
@@ -392,118 +394,18 @@ function drawCustomers(g, state) {
     grp.addEventListener('mouseleave', hideTip);
     grp.addEventListener('click', () => setSelection({ type: 'customer', id: c.id }));
     g.appendChild(grp);
-    refs.customers[c.id] = { grp, body, marker };
+    refs.customers[c.id] = { grp, iconG, body, marker };
   }
-}
-
-// ── 중서부 인셋 (§4.1 필수) ─────────────────────────────────────────────
-function drawInset(parent, state) {
-  const x0 = dims.w - INSET.w - INSET.pad;
-  const y0 = INSET.pad;
-  const g = svg('g', { transform: `translate(${x0},${y0})` });
-
-  // 클러스터 → 인셋 점선 leader 2줄
-  if (refs.prodBox) {
-    const b = refs.prodBox;
-    const leader = (fx, fy, tx, ty) => svg('line', {
-      x1: fx, y1: fy, x2: tx, y2: ty,
-      stroke: 'var(--border-strong)', 'stroke-width': 1, 'stroke-dasharray': '2 3', opacity: 0.7,
-    });
-    const lg = svg('g');
-    lg.appendChild(leader(b.x + b.w, b.y, x0, y0));
-    lg.appendChild(leader(b.x + b.w, b.y + b.h, x0, y0 + INSET.h));
-    zoomG.appendChild(lg);
-  }
-
-  g.appendChild(svg('rect', {
-    x: 0, y: 0, width: INSET.w, height: INSET.h,
-    fill: 'var(--bg-panel)', stroke: 'var(--border-strong)', 'stroke-width': 1,
-  }));
-  g.appendChild(svg('rect', {
-    x: 0, y: 0, width: INSET.w, height: 18, fill: 'var(--bg-elevated)',
-  }));
-  g.appendChild(svg('text', {
-    x: 8, y: 12.5, class: 'svg-sect', text: 'MIDWEST PRODUCTION CLUSTER',
-  }));
-
-  // 지리 투영이 아니라 스키매틱 배치: Cell 좌측 열 / Pack 우측 열
-  const cellX = 42;
-  const packX = INSET.w - 58;
-  const cellY = (i) => 42 + i * 27;
-  const packY = (i) => 74 + i * 44;
-  const pos = {};
-  CELL_IDS.forEach((id, i) => (pos[id] = [cellX, cellY(i)]));
-  PACK_IDS.forEach((id, i) => (pos[id] = [packX, packY(i)]));
-
-  // 연결선 + 거리 라벨 (최단 배차 경로만 — 전 조합을 그리면 판독 불가)
-  const linkLayer = svg('g');
-  for (const cid of CELL_IDS) {
-    const nearest = [...PACK_IDS].sort(
-      (a, b) => distOf(cid, a) - distOf(cid, b)
-    )[0];
-    const [ax, ay] = pos[cid];
-    const [bx, by] = pos[nearest];
-    linkLayer.appendChild(svg('line', {
-      x1: ax + 20, y1: ay, x2: bx - 20, y2: by,
-      stroke: 'var(--border-strong)', 'stroke-width': 1, opacity: 0.8,
-    }));
-    linkLayer.appendChild(svg('text', {
-      x: (ax + bx) / 2, y: (ay + by) / 2 - 3, 'text-anchor': 'middle', class: 'svg-caption',
-      text: fmtMiles(distOf(cid, nearest)),
-    }));
-  }
-  g.appendChild(linkLayer);
-
-  for (const id of [...CELL_IDS, ...PACK_IDS]) {
-    const n = NODES.find((x) => x.id === id);
-    const [x, y] = pos[id];
-    const r = 7;
-    const grp = svg('g', { transform: `translate(${x},${y})`, class: 'node-hit' });
-    const ring = svg('path', {
-      d: symbolPath(n.type, r + 3), fill: 'none', stroke: 'var(--status-ok)', 'stroke-width': 2,
-    });
-    const body = svg('path', {
-      d: symbolPath(n.type, r), fill: 'var(--bg-app)', stroke: 'var(--text-secondary)', 'stroke-width': 1.2,
-    });
-    grp.appendChild(ring);
-    grp.appendChild(body);
-    const gauges = gaugePair(r + 5, 0, 13);
-    grp.appendChild(gauges.inBg); grp.appendChild(gauges.outBg);
-    grp.appendChild(gauges.inBar); grp.appendChild(gauges.outBar);
-    grp.appendChild(svg('text', {
-      x: n.type === 'CELL' ? -12 : 20, y: 3.5,
-      'text-anchor': n.type === 'CELL' ? 'end' : 'start',
-      class: 'svg-label', fill: 'var(--text-primary)', text: n.short,
-    }));
-    grp.addEventListener('mouseenter', (e) => showTip(e, nodeTip(id, appState.playhead)));
-    grp.addEventListener('mousemove', moveTip);
-    grp.addEventListener('mouseleave', hideTip);
-    grp.addEventListener('click', () => setSelection({ type: 'node', id }));
-    g.appendChild(grp);
-    refs.insetNodes[id] = { grp, ring, gauges };
-  }
-
-  g.appendChild(svg('text', {
-    x: 8, y: INSET.h - 7, class: 'svg-caption',
-    text: 'SCHEMATIC · NOT TO GEOGRAPHIC SCALE',
-  }));
-  parent.appendChild(g);
-}
-
-function distOf(a, b) {
-  return appState.result.perLane[`${a}->${b}`]?.miles ?? 0;
 }
 
 // ── 뷰 크롬 ─────────────────────────────────────────────────────────────
 function drawChrome(container) {
-  const cap = document.createElement('div');
-  cap.className = 'view-caption';
-  cap.textContent = META.caption;
-  container.appendChild(cap);
-
+  // 축척 표시는 유지한다 — 지도 스케일을 가늠하는 실질적인 정보다.
+  // 데이터 출처 · 미검증 고지 문구는 지도 위에서는 지우고 설정(⌘K) 모달의
+  // '데이터 출처' 섹션에서만 보여준다 (src/ui.js openSettings 참고).
   const src = document.createElement('div');
   src.className = 'scale-bar';
-  src.innerHTML = `<div>${scaleLabel()}</div><div class="rule" style="width:80px"></div><div style="margin-top:4px">${META.distanceSource}</div>`;
+  src.innerHTML = `<div>${scaleLabel()}</div><div class="rule" style="width:80px"></div>`;
   container.appendChild(src);
 
   const ctrls = document.createElement('div');
@@ -515,10 +417,12 @@ function drawChrome(container) {
   };
   ctrls.appendChild(mk('+', '확대', () => zoomBy(1.25)));
   ctrls.appendChild(mk('−', '축소', () => zoomBy(0.8)));
-  ctrls.appendChild(mk('⤢', 'fit', () => { transform = { k: 1, x: 0, y: 0 }; applyTransform(); }));
+  ctrls.appendChild(mk('⤢', 'fit', () => { transform = { k: 1, x: 0, y: 0 }; clampTransform(); applyTransform(); }));
   container.appendChild(ctrls);
 
-  // 팬 / 줌
+  // 팬 / 줌 — 드래그 가능 범위는 지도 콘텐츠 자체 크기로 제한한다
+  // (clampTransform). 배율이 1 이하로 축소되면 콘텐츠가 뷰포트보다
+  // 작아지므로 가운데 고정하고 팬을 잠근다 — 그때는 확대·축소만 남는다.
   let dragging = false;
   let last = null;
   svgEl.addEventListener('mousedown', (e) => {
@@ -531,11 +435,15 @@ function drawChrome(container) {
     transform.x += e.clientX - last[0];
     transform.y += e.clientY - last[1];
     last = [e.clientX, e.clientY];
+    clampTransform();
     applyTransform();
   });
   svgEl.addEventListener('wheel', (e) => {
     e.preventDefault();
-    zoomBy(e.deltaY < 0 ? 1.08 : 0.926);
+    const rect = svgEl.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (dims.w / rect.width);
+    const cy = (e.clientY - rect.top) * (dims.h / rect.height);
+    zoomBy(e.deltaY < 0 ? 1.08 : 0.926, cx, cy);
   }, { passive: false });
   svgEl.addEventListener('click', (e) => {
     if (!e.target.closest('.node-hit') && !e.target.closest('.arc-hit')) setSelection(null);
@@ -548,13 +456,60 @@ function scaleLabel() {
   return `≈ ${Math.round((mpp * 80) / 50) * 50} mi`;
 }
 
-function zoomBy(f) {
-  transform.k = Math.max(0.6, Math.min(6, transform.k * f));
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 6;
+
+/**
+ * 팬 가능 범위를 지도 콘텐츠(dims.w × dims.h, k=1 일 때 뷰포트를 정확히
+ * 채우도록 투영을 fit 했다) 자체 크기로 제한한다. 배율이 1 이하로 축소되면
+ * 콘텐츠가 뷰포트보다 작아지므로 그 경우엔 가운데로 고정한다 — 빈 여백으로
+ * 드래그해 지도를 놓치는 상황을 막는다.
+ */
+function clampTransform() {
+  const k = transform.k;
+  const scaledW = dims.w * k;
+  const scaledH = dims.h * k;
+  transform.x = scaledW <= dims.w
+    ? (dims.w - scaledW) / 2
+    : Math.min(0, Math.max(dims.w - scaledW, transform.x));
+  transform.y = scaledH <= dims.h
+    ? (dims.h - scaledH) / 2
+    : Math.min(0, Math.max(dims.h - scaledH, transform.y));
+}
+
+/** (cx,cy) 뷰포트 좌표를 고정점으로 줌 — 그 아래 콘텐츠가 배율 전후로 같은 화면 위치에 남는다. */
+function zoomBy(f, cx = dims.w / 2, cy = dims.h / 2) {
+  const k0 = transform.k;
+  const k1 = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, k0 * f));
+  if (k1 === k0) return;
+  const scale = k1 / k0;
+  transform.x = cx - (cx - transform.x) * scale;
+  transform.y = cy - (cy - transform.y) * scale;
+  transform.k = k1;
+  clampTransform();
   applyTransform();
 }
 
 function applyTransform() {
-  if (zoomG) zoomG.setAttribute('transform', `translate(${transform.x},${transform.y}) scale(${transform.k})`);
+  if (!zoomG) return;
+  zoomG.setAttribute('transform', `translate(${transform.x},${transform.y}) scale(${transform.k})`);
+  updateIconScale();
+}
+
+/**
+ * 노드 · 고객 아이콘에 확대율의 역수를 걸어 화면상 크기를 고정한다. 걸지
+ * 않으면 지도를 확대할 때 아이콘도 배율만큼 커져, 노드 간격은 벌어져도
+ * 아이콘끼리는 여전히 같은 비율로 겹친 채 남는다 — 확대가 겹침 해소에
+ * 아무 도움이 안 된다. 위치(각 그룹의 translate)는 그대로 두고 시각 요소를
+ * 담은 내부 iconG 에만 scale(1/k) 를 줘서, 확대할수록 아이콘은 화면에서
+ * 같은 크기를 유지하고 간격만 넓어지게 한다.
+ */
+function updateIconScale() {
+  if (!refs) return;
+  const s = 1 / transform.k;
+  for (const ref of Object.values(refs.nodes)) ref.iconG?.setAttribute('transform', `scale(${s})`);
+  for (const ref of Object.values(refs.customers)) ref.iconG?.setAttribute('transform', `scale(${s})`);
+  refs.hollandIcon?.setAttribute('transform', `scale(${s})`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -573,19 +528,18 @@ export function frame(state) {
     const inF = p.inputCapacity > 0 ? p.inputBufferSeries[day] / p.inputCapacity : 0;
     const outF = p.outputCapacity > 0 ? p.outputBufferSeries[day] / p.outputCapacity : 0;
 
-    for (const ref of [refs.nodes[n.id], refs.insetNodes[n.id]]) {
-      if (!ref) continue;
-      ref.ring.setAttribute('stroke', STATUS_COLOR[st]);
-      ref.ring.setAttribute('stroke-dasharray', st === 'DOWN' ? '3 2' : 'none');
-      if (ref.gauges) {
-        paintGauge(ref.gauges.inBar, ref.gauges.inBg, n.type === 'CELL' ? 1 : inF,
-          n.type === 'CELL' ? 'var(--status-idle)' : inF < 0.05 ? 'var(--status-danger)' : 'var(--accent)');
-        paintGauge(ref.gauges.outBar, ref.gauges.outBg, outF,
-          outF > 0.95 ? 'var(--status-warn)' : 'var(--cyan)');
-      }
-      const on = !sel || (sel.type === 'node' && sel.id === n.id);
-      ref.grp.setAttribute('opacity', on ? 1 : 0.2);
+    const ref = refs.nodes[n.id];
+    if (!ref) continue;
+    ref.ring.setAttribute('stroke', STATUS_COLOR[st]);
+    ref.ring.setAttribute('stroke-dasharray', st === 'DOWN' ? '3 2' : 'none');
+    if (ref.gauges) {
+      paintGauge(ref.gauges.inBar, ref.gauges.inBg, n.type === 'CELL' ? 1 : inF,
+        n.type === 'CELL' ? 'var(--status-idle)' : inF < 0.05 ? 'var(--status-danger)' : 'var(--accent)');
+      paintGauge(ref.gauges.outBar, ref.gauges.outBg, outF,
+        outF > 0.95 ? 'var(--status-warn)' : 'var(--cyan)');
     }
+    const on = !sel || (sel.type === 'node' && sel.id === n.id);
+    ref.grp.setAttribute('opacity', on ? 1 : 0.2);
   }
   if (refs.nodes[HUB.id]) {
     refs.nodes[HUB.id].grp.setAttribute('opacity', !sel || sel.id === HUB.id ? 1 : 0.2);
@@ -638,7 +592,7 @@ export function frame(state) {
     const t = Math.max(0, Math.min(1, (day - s.departDay) / Math.max(1, s.transitDays)));
     const pt = path.getPointAtLength(t * len);
     refs.dots.appendChild(svg('circle', {
-      cx: pt.x, cy: pt.y, r: s.expedited ? 2.6 : 1.9,
+      cx: pt.x, cy: pt.y, r: s.expedited ? 2.2 : 1.6,
       fill: s.expedited ? 'var(--status-warn)' : 'var(--cyan)',
     }));
   }

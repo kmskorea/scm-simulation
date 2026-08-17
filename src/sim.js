@@ -24,6 +24,7 @@ import {
   CELL_IDS, PACK_IDS, LINK_IDS, milesBetween, PO_BASE_YEAR_MONTH,
 } from './data.js';
 import * as COST from './cost.js';
+import { COST_BUCKETS } from './cost.js';
 
 const EPS = SIM.epsilon;
 
@@ -269,7 +270,7 @@ function computePlan(perceivedCapacity, yieldsByStage, demandRate, inventoryAdj)
 }
 
 /**
- * OPERATE 모드용 — day 시점 변경이 실제로 적용되는 최단 일자.
+ * PLAN 모드용 — day 시점 변경이 실제로 적용되는 최단 일자.
  * 실질 대응 지연 = 정보지연 + (다음 replan 경계까지) + frozen window
  */
 export function earliestApplicableDay(planning, day) {
@@ -518,12 +519,19 @@ export function runSim(config) {
     inTransit.reduce((s, x) => s + x.qtyMWh, 0);
 
   // 시스템 시계열
+  // costSeries 는 버킷별 '누적' 원가다(그날까지 발생한 총액). 특정일에 발생한
+  // 금액만 필요하면 호출부에서 costSeries[d] - costSeries[d-1] 로 차분한다 —
+  // 어제 대비 델타 스트립(ui.js)이 이미 이 패턴을 쓴다. 배열을 따로 하나 더
+  // 두지 않는 이유는 저장하는 정보가 결국 같기 때문이다: 매일을 순회하며
+  // 누적을 다시 미분하느니, 누적 하나만 진실의 원천으로 두고 필요할 때
+  // 차분하는 쪽이 이중 부기를 피한다.
   const sys = {
     throughputMWhPerDay: new Array(H).fill(0),
     deliveredMWhSeries: new Array(H).fill(0),
     wipSeries: new Array(H).fill(0),
     inTransitSeries: new Array(H).fill(0),
-    cumPenaltySeries: new Array(H).fill(0),
+    costSeries: Object.fromEntries(COST_BUCKETS.map((b) => [b.id, new Array(H).fill(0)])),
+    totalCostSeries: new Array(H).fill(0),
     planRateSeries: new Array(H).fill(0),
     demandRateSeries: new Array(H).fill(0),
   };
@@ -1012,7 +1020,16 @@ export function runSim(config) {
         addEvent(day, 'CRIT', o.customerId, `${o.id} OVERDUE · ${(remain / UNITS.linkMWh).toFixed(1)} LINK SHORT`, { orderId: o.id });
       }
     }
-    sys.cumPenaltySeries[day] = breakdown.ldPenalty;
+    // 그날까지의 누적 원가 스냅샷. dispatch()(운임·특송) · 유휴비 · 초과보관비 ·
+    // LD 페널티(인도 완료분 + 미인도 잔량 가산분) 전부 이 지점 이전에 그날치가
+    // breakdown 에 이미 더해져 있으므로, 여기서 한 번에 찍으면 6개 버킷이
+    // 모두 같은 시점(그날 마감) 기준으로 스냅샷된다.
+    let dayTotal = 0;
+    for (const b of COST_BUCKETS) {
+      sys.costSeries[b.id][day] = breakdown[b.id];
+      dayTotal += breakdown[b.id];
+    }
+    sys.totalCostSeries[day] = dayTotal;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1062,7 +1079,8 @@ export function runSim(config) {
     deliveredMWhSeries: sys.deliveredMWhSeries,
     wipSeries: sys.wipSeries,
     inTransitSeries: sys.inTransitSeries,
-    cumPenaltySeries: sys.cumPenaltySeries,
+    costSeries: sys.costSeries, // 버킷별(baseFreight 등) 누적 원가 — src/cost.js COST_BUCKETS 참고
+    totalCostSeries: sys.totalCostSeries, // 전 버킷 합산 누적 원가
     planRateSeries: sys.planRateSeries,
     demandRateSeries: sys.demandRateSeries,
     otdPct: reportOrders.length ? (onTime / reportOrders.length) * 100 : 100,
